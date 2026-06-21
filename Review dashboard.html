@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HealthLynked — مراجعة التغييرات</title>
+<style>
+  :root {
+    --ink:           #181210;
+    --black:         #1C1C1C;
+    --burgundy:      #6D1F2A;
+    --burgundy-dark: #4A121C;
+    --red:           #A63A32;
+    --brown:         #5A3A2E;
+    --brown-dark:    #3B241C;
+    --paper:         #F7F3EC;
+    --card:          #FFFFFF;
+    --line:          #E6E1D8;
+    --line-dark:     #D3C9C3;
+    --muted:         #8A8378;
+    --green:         #2F7D4F;
+    --amber:         #B5701A;
+    --soft-burgundy: #F1E3E6;
+    --shadow:        0 10px 30px rgba(28,28,28,0.12);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, "Segoe UI", "Noto Sans Arabic", Tahoma, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.6;
+    padding-bottom: 90px;
+  }
+
+  header {
+    background: linear-gradient(135deg, var(--burgundy-dark), var(--black));
+    color: #fff;
+    padding: 32px 24px;
+    border-bottom: 4px solid var(--brown-dark);
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header h1 { font-size: 1.6rem; font-weight: 800; letter-spacing: -0.01em; }
+  header p { opacity: 0.85; font-size: 0.95rem; margin-top: 5px; }
+
+  .stats-shell {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(247,243,236,0.94);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line-dark);
+    box-shadow: 0 8px 22px rgba(28,28,28,0.06);
+  }
+  .stats {
+    display: flex; gap: 14px; max-width: 980px; margin: 0 auto;
+    padding: 16px 24px; flex-wrap: wrap;
+  }
+  .stat {
+    flex: 1; min-width: 140px; background: var(--card);
+    border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 20px; box-shadow: 0 2px 10px rgba(28,28,28,0.04);
+  }
+  .stat .num {
+    font-size: 2.1rem; font-weight: 800; line-height: 1;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+    transition: transform 0.35s cubic-bezier(.34,1.56,.64,1);
+  }
+  .stat .num.pop { transform: scale(1.35); }
+  .stat .lbl { font-size: 0.82rem; color: var(--muted); margin-top: 7px; }
+  .stat.pending .num { color: var(--amber); }
+  .stat.approved .num { color: var(--green); }
+  .stat.rejected .num { color: var(--red); }
+
+  .tools {
+    max-width: 980px; margin: 16px auto 0; padding: 0 24px;
+    display: flex; justify-content: flex-end;
+  }
+  .reset-btn {
+    background: #fff; color: var(--brown); border: 1px solid var(--line-dark);
+    padding: 8px 14px; font-size: 0.82rem; border-radius: 999px;
+    cursor: pointer; font-family: inherit; transition: background 0.15s;
+  }
+  .reset-btn:hover { background: var(--paper); }
+
+  main { max-width: 980px; margin: 18px auto 0; padding: 0 24px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 22px 24px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 10px rgba(28,28,28,0.04);
+    transition: transform 0.3s cubic-bezier(.34,1.4,.64,1),
+                box-shadow 0.3s, background 0.4s, border-color 0.3s, color 0.4s;
+    will-change: transform;
+  }
+
+  /* hover: يكبر + يحلو + يقلب من فاتح لداكن */
+  .card:not(.done):hover {
+    transform: translateY(-4px) scale(1.025);
+    box-shadow: 0 22px 48px rgba(74,18,28,0.30);
+    background: linear-gradient(150deg, var(--black), var(--burgundy-dark));
+    border-color: var(--brown-dark);
+    color: #f3ece4;
+  }
+  .card:not(.done):hover .doc-name { color: #fff; }
+  .card:not(.done):hover .doc-npi { color: #cdbfb8; }
+  .card:not(.done):hover .change {
+    background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12);
+  }
+  .card:not(.done):hover .val .k { color: #c9bcb4; }
+  .card:not(.done):hover .val .old { color: #e89a93; }
+  .card:not(.done):hover .val .new { color: #7fd6a0; }
+  .card:not(.done):hover .arrow { color: #d8c4bd; }
+  .card:not(.done):hover .conf .meta { color: #cabdb5; }
+  .card:not(.done):hover .conf .bar-bg { background: rgba(255,255,255,0.15); }
+  .card:not(.done):hover .reason {
+    background: rgba(255,255,255,0.07); color: #f0e7df;
+  }
+  .card:not(.done):hover .field-tag {
+    background: rgba(255,255,255,0.12); color: #fff;
+    border-color: rgba(255,255,255,0.2);
+  }
+  .card:not(.done):hover .reject { background: transparent; color: #f0a8a1; border-color: #f0a8a1; }
+
+  /* اختفاء الكارت: ينزلق ويطوي نفسه فاللي تحته يطلع */
+  .card.leaving {
+    opacity: 0;
+    transform: translateX(60px) scale(0.92);
+    margin-bottom: 0;
+    padding-top: 0; padding-bottom: 0;
+    max-height: 0;
+    border-width: 0;
+    overflow: hidden;
+    transition: opacity 0.4s ease,
+                transform 0.4s ease,
+                max-height 0.5s ease 0.1s,
+                padding 0.5s ease 0.1s,
+                margin 0.5s ease 0.1s,
+                border-width 0.5s ease 0.1s;
+  }
+
+  .card-top {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+  }
+  .doc-name { font-weight: 800; font-size: 1.12rem; color: var(--black); transition: color 0.4s; }
+  .doc-npi { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 2px; transition: color 0.4s; }
+  .field-tag {
+    background: var(--soft-burgundy); color: var(--burgundy);
+    font-size: 0.78rem; font-weight: 700; padding: 4px 12px;
+    border-radius: 999px; border: 1px solid rgba(109,31,42,0.14);
+    transition: background 0.4s, color 0.4s, border-color 0.4s;
+  }
+
+  .change {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--paper); border: 1px solid var(--line);
+    border-radius: 11px; padding: 14px; margin-bottom: 12px;
+    transition: background 0.4s, border-color 0.4s;
+  }
+  .val { font-variant-numeric: tabular-nums; }
+  .val .k { display: block; font-size: 0.72rem; color: var(--muted); margin-bottom: 3px; transition: color 0.4s; }
+  .val .old { color: var(--red); text-decoration: line-through; font-weight: 600; transition: color 0.4s; }
+  .val .new { color: var(--green); font-weight: 800; transition: color 0.4s; }
+  .arrow { color: var(--brown); font-size: 1.15rem; transition: color 0.4s; }
+
+  .conf { margin-bottom: 12px; }
+  .conf .bar-bg {
+    background: var(--line); height: 9px; border-radius: 999px;
+    overflow: hidden; margin-top: 5px; transition: background 0.4s;
+  }
+  .conf .bar-fill {
+    height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--burgundy), var(--brown));
+    transition: width 0.6s cubic-bezier(.34,1.2,.64,1);
+  }
+  .conf .meta { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--muted); transition: color 0.4s; }
+
+  .reason {
+    font-size: 0.86rem; color: var(--ink); background: #FFF8ED;
+    border-right: 4px solid var(--amber); padding: 9px 13px;
+    border-radius: 6px; margin-bottom: 18px; transition: background 0.4s, color 0.4s;
+  }
+
+  .actions { display: flex; gap: 10px; }
+  button {
+    flex: 1; font-family: inherit; font-size: 0.95rem; font-weight: 800;
+    padding: 12px; border: none; border-radius: 10px; cursor: pointer;
+    transition: filter 0.15s, transform 0.12s;
+  }
+  button:hover { filter: brightness(0.95); transform: translateY(-1px); }
+  button:active { transform: translateY(0) scale(0.98); }
+  button:focus-visible { outline: 3px solid rgba(109,31,42,0.4); outline-offset: 2px; }
+  .approve { background: var(--green); color: #fff; }
+  .reject { background: #fff; color: var(--red); border: 1.5px solid var(--red); }
+
+  .empty { text-align: center; padding: 70px 20px; color: var(--muted); }
+  .empty .big { font-size: 1.35rem; color: var(--ink); margin-bottom: 8px; font-weight: 800; }
+
+  code {
+    direction: ltr; display: inline-block; background: #fff;
+    border: 1px solid var(--line); color: var(--burgundy);
+    padding: 1px 6px; border-radius: 5px; font-size: 0.85em;
+  }
+
+  @media (max-width: 640px) {
+    header { padding: 24px 18px; }
+    header h1 { font-size: 1.25rem; }
+    .stats { gap: 10px; padding: 12px 16px; }
+    .stat { min-width: calc(50% - 10px); padding: 13px; }
+    .stat .num { font-size: 1.7rem; }
+    main, .tools { padding: 0 16px; }
+    .card { padding: 18px 16px; }
+    .actions { flex-direction: column; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, .card, .card.leaving { transition: opacity 0.2s !important; transform: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>مراجعة التغييرات — HealthLynked</h1>
+    <p>التغييرات الحسّاسة اللي محتاجة قرار بشري قبل التطبيق</p>
+  </div>
+</header>
+
+<section class="stats-shell">
+  <div class="stats">
+    <div class="stat pending"><div class="num" id="n-pending">0</div><div class="lbl">مستني مراجعة</div></div>
+    <div class="stat approved"><div class="num" id="n-approved">0</div><div class="lbl">اتقبل</div></div>
+    <div class="stat rejected"><div class="num" id="n-rejected">0</div><div class="lbl">اترفض</div></div>
+  </div>
+</section>
+
+<div class="tools">
+  <button class="reset-btn" id="reset-decisions">مسح قرارات المراجعة</button>
+</div>
+
+<main id="list"></main>
+
+<script>
+  const STORAGE_KEY = 'healthlynked_review_decisions_v3';
+  let reviewData = [];
+  let decisions = loadDecisions();
+
+  async function load() {
+    try {
+      const res = await fetch('review_data.json', { cache: 'no-store' });
+      if (!res.ok) throw new Error('no file');
+      const json = await res.json();
+      if (!Array.isArray(json)) throw new Error('bad json');
+      reviewData = json;
+    } catch (e) {
+      reviewData = [];
+      updateCounters(true);
+      document.getElementById('list').innerHTML =
+        '<div class="empty"><div class="big">مش لاقي البيانات</div>' +
+        'شغّل <code>export_review.py</code> الأول عشان يطلّع ملف <code>review_data.json</code> جنب الصفحة دي.</div>';
+      return;
+    }
+    renderList();
+    updateCounters(true);
+  }
+
+  function renderList() {
+    const list = document.getElementById('list');
+    list.innerHTML = '';
+    const visible = reviewData.filter(it => !decisions[getItemId(it)]);
+    if (visible.length === 0) {
+      list.innerHTML =
+        '<div class="empty"><div class="big">مفيش تغييرات مستنية</div>كل حاجة اتراجعت. 🎉</div>';
+      return;
+    }
+    visible.forEach(item => list.appendChild(makeCard(item)));
+  }
+
+  function makeCard(item) {
+    const id = getItemId(item);
+    const pct = clampPercent(item.confidence);
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.dataset.id = id;
+    card.innerHTML =
+      '<div class="card-top">' +
+        '<div>' +
+          '<div class="doc-name">' + esc(item.name) + '</div>' +
+          '<div class="doc-npi">NPI ' + esc(item.npi) + '</div>' +
+        '</div>' +
+        '<span class="field-tag">' + esc(item.field) + '</span>' +
+      '</div>' +
+      '<div class="change">' +
+        '<div class="val"><span class="k">القيمة الحالية</span><span class="old">' + esc(item.old_value) + '</span></div>' +
+        '<span class="arrow">←</span>' +
+        '<div class="val"><span class="k">القيمة المقترحة من ' + esc(item.source) + '</span><span class="new">' + esc(item.new_value) + '</span></div>' +
+      '</div>' +
+      '<div class="conf">' +
+        '<div class="meta"><span>مستوى الثقة</span><span>' + pct + '%</span></div>' +
+        '<div class="bar-bg"><div class="bar-fill" style="width:0%"></div></div>' +
+      '</div>' +
+      '<div class="reason">' + esc(item.reason || 'لا يوجد سبب مذكور.') + '</div>' +
+      '<div class="actions">' +
+        '<button class="approve">قبول التغيير</button>' +
+        '<button class="reject">رفض</button>' +
+      '</div>';
+    requestAnimationFrame(function () {
+      const f = card.querySelector('.bar-fill');
+      if (f) f.style.width = pct + '%';
+    });
+    card.querySelector('.approve').addEventListener('click', function () { decide(card, id, 'approve'); });
+    card.querySelector('.reject').addEventListener('click', function () { decide(card, id, 'reject'); });
+    return card;
+  }
+
+  function decide(card, id, kind) {
+    if (decisions[id]) return;
+    decisions[id] = kind;
+    saveDecisions();
+
+    card.classList.add('leaving');
+    card.addEventListener('transitionend', function handler(ev) {
+      if (ev.propertyName === 'max-height') {
+        card.removeEventListener('transitionend', handler);
+        card.remove();
+        if (document.querySelectorAll('#list .card').length === 0) renderList();
+      }
+    });
+
+    updateCounters();
+  }
+
+  function updateCounters(initial) {
+    let approved = 0, rejected = 0;
+    reviewData.forEach(function (item) {
+      const d = decisions[getItemId(item)];
+      if (d === 'approve') approved++;
+      else if (d === 'reject') rejected++;
+    });
+    const pending = Math.max(0, reviewData.length - approved - rejected);
+    setNum('n-pending', pending, initial);
+    setNum('n-approved', approved, initial);
+    setNum('n-rejected', rejected, initial);
+  }
+
+  function setNum(elId, val, initial) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const changed = el.textContent !== String(val);
+    el.textContent = val;
+    if (changed && !initial) {
+      el.classList.add('pop');
+      setTimeout(function () { el.classList.remove('pop'); }, 350);
+    }
+  }
+
+  function getItemId(item) {
+    if (item.id) return String(item.id);
+    return [item.npi, item.field, item.old_value, item.new_value, item.source]
+      .map(function (v) { return String(v == null ? '' : v).trim(); }).join('|');
+  }
+
+  function clampPercent(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 0;
+    const pct = num <= 1 ? num * 100 : num;
+    return Math.max(0, Math.min(100, Math.round(pct)));
+  }
+
+  function loadDecisions() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
+    catch (e) { return {}; }
+  }
+  function saveDecisions() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(decisions));
+  }
+
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+  }
+
+  document.getElementById('reset-decisions').addEventListener('click', function () {
+    if (!confirm('تمسح كل قرارات القبول والرفض؟')) return;
+    decisions = {};
+    saveDecisions();
+    renderList();
+    updateCounters(true);
+  });
+
+  load();
+</script>
+</body>
+</html>

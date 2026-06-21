@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local editor / tooling state
+.claude/settings.local.json
+
+# Generated data artifacts (rebuilt by the pipeline)
+healthlynked.db
+providers.csv
+review_data.json
+dirty_providers.csv
+misclassified.csv
