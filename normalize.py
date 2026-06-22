@@ -1,20 +1,20 @@
 """
 normalize.py
 ------------
-مركز تطبيع البيانات (Normalization Layer).
+Data normalization hub (Normalization Layer).
 
-الفرق عن validation.py:
-  validation  →  بيقول "صح ولا غلط؟"   (بيرجّع True/False)
-  normalize   →  بيحوّل للشكل الموحّد   (بيرجّع نص منظّف)
+Difference from validation.py:
+  validation  →  answers "valid or not?"   (returns True/False)
+  normalize   →  converts to a unified form (returns cleaned text)
 
-كل دالة بترجّع نسختين:
-  display  →  شكل جميل للعرض والتخزين      (Title Case)
-  compare  →  شكل موحّد للمقارنة الداخلية   (lowercase, ألقاب متشالة)
+Each function returns two versions:
+  display  →  a nice form for display and storage    (Title Case)
+  compare  →  a unified form for internal comparison (lowercase, titles stripped)
 
-الجاهز دلوقتي:
+Ready now:
   ✅ normalize_name()
 
-هنضيف بعدين:
+To be added later:
   ⬜ normalize_phone()
   ⬜ normalize_address()
 """
@@ -26,61 +26,61 @@ import re
 #  NAME  ✅
 # ===========================================================================
 
-# الألقاب اللي بنشيلها من نسخة المقارنة (بأحرف صغيرة عشان المطابقة)
+# Titles we strip from the comparison version (lowercase for matching)
 _TITLES = {"dr", "doc", "doctor", "prof", "mr", "mrs", "ms",
            "md", "phd", "do", "rn", "np"}
 
 
 def _cap_name_word(word):
     """
-    زي .capitalize() بس بتكبّر أول كل جزء مفصول بـ ' أو -
-    عشان "O'Connor" تفضل "O'Connor" مش "O'connor"، و"Al-Hassan" تفضل صح.
-    (capitalize العادية بتصغّر كل اللي بعد أول حرف.)
+    Like .capitalize() but capitalizes the first letter of each segment split by ' or -
+    so that "O'Connor" stays "O'Connor" instead of "O'connor", and "Al-Hassan" stays correct.
+    (The regular capitalize lowercases everything after the first letter.)
     """
     return re.sub(r"[A-Za-z]+", lambda m: m.group(0).capitalize(), word)
 
 
 def normalize_name(name):
     """
-    بتاخد اسم خام وترجّع dict فيه نسختين:
+    Takes a raw name and returns a dict with two versions:
         {
-            "display": "Ahmed M Hassan",   ← للعرض والتخزين
-            "compare": "ahmed m hassan"    ← للمقارنة الداخلية
+            "display": "Ahmed M Hassan",   ← for display and storage
+            "compare": "ahmed m hassan"    ← for internal comparison
         }
 
-    خطوات التنظيف:
-      0. لو الاسم مقلوب بفاصلة ("Hassan, Ahmed") نقلبه لـ "Ahmed Hassan".
-      1. نشيل النقط ونحوّلها لمسافة (عشان "St.John" متبقاش "stjohn").
-      2. نوحّد المسافات الزيادة.
-      3. نشيل الألقاب (Dr, MD ...).
-      4. display = Title Case (بنسيب O'Connor جميلة)
-         compare = lowercase + ندمج الفواصل العلوية والشرطات (oconnor).
+    Cleaning steps:
+      0. If the name is reversed with a comma ("Hassan, Ahmed") flip it to "Ahmed Hassan".
+      1. Strip dots and turn them into spaces (so "St.John" doesn't become "stjohn").
+      2. Collapse extra spaces.
+      3. Strip titles (Dr, MD ...).
+      4. display = Title Case (keeping O'Connor nice)
+         compare = lowercase + merge apostrophes and hyphens (oconnor).
     """
     if name is None:
         return {"display": "", "compare": ""}
 
     text = str(name).strip()
 
-    # 0) الاسم المقلوب: لو فيه فاصلة واحدة بس ("Hassan, Ahmed")
-    #    نقلب الترتيب → "Ahmed Hassan" قبل أي تنظيف تاني.
+    # 0) Reversed name: if there is exactly one comma ("Hassan, Ahmed")
+    #    flip the order → "Ahmed Hassan" before any other cleaning.
     if text.count(",") == 1:
         last, first = text.split(",")
         text = f"{first.strip()} {last.strip()}"
 
-    # 1) نشيل النقط ونحوّلها لمسافة (للأسماء زي "St.John")
-    #    ملاحظة: مبنلمسش ' ولا - هنا — هنتعامل معاهم في كل نسخة لوحدها.
+    # 1) Strip dots and turn them into spaces (for names like "St.John")
+    #    Note: we don't touch ' or - here — we handle them per version.
     text = re.sub(r"\.", " ", text)
 
-    # 2) نوحّد المسافات: أي مسافات متعددة تبقى مسافة واحدة
+    # 2) Collapse spaces: any multiple spaces become a single space
     text = re.sub(r"\s+", " ", text).strip()
 
-    # 3) نقسّم لكلمات ونشيل الألقاب
+    # 3) Split into words and strip titles
     words = [w for w in text.split(" ") if w and w.lower().strip("'-") not in _TITLES]
 
-    # --- نسخة العرض: Title Case مع الحفاظ على الحرف الكبير بعد ' و - (O'Connor, Al-Hassan) ---
+    # --- Display version: Title Case while keeping the uppercase letter after ' and - (O'Connor, Al-Hassan) ---
     display = " ".join(_cap_name_word(w) for w in words)
 
-    # --- نسخة المقارنة: lowercase + ندمج الفواصل العلوية والشرطات ---
+    # --- Compare version: lowercase + merge apostrophes and hyphens ---
     #     "O'Connor" → "oconnor"  |  "Al-Hassan" → "alhassan"
     compare = " ".join(words).lower()
     compare = re.sub(r"['\-]", "", compare)
@@ -94,20 +94,20 @@ def normalize_name(name):
 
 def normalize_specialty(code, desc):
     """
-    بتاخد كود التخصص ووصفه، وترجّع dict منظّف:
+    Takes the specialty code and its description, and returns a cleaned dict:
         {
-            "code":    "1223G0001X",       ← الكود (موحّد، حروف كبيرة)
-            "display": "General Practice",  ← الوصف للعرض
-            "compare": "general practice"   ← الوصف للمقارنة
+            "code":    "1223G0001X",       ← the code (unified, uppercase)
+            "display": "General Practice",  ← the description for display
+            "compare": "general practice"   ← the description for comparison
         }
 
-    ملاحظة: الكود زي الـ NPI — معرّف ثابت، فبس بنوحّد شكله (حروف كبيرة)
-    من غير ما نغيّر محتواه.
+    Note: the code is like the NPI — a fixed identifier, so we only unify its
+    form (uppercase) without changing its content.
     """
-    # الكود: نشيل المسافات ونخليه حروف كبيرة (UPPER) عشان التوحيد
+    # The code: strip spaces and make it uppercase (UPPER) for unification
     code = str(code).strip().upper() if code else ""
 
-    # الوصف: نفس منطق تنظيف الأسماء (مسافات موحّدة)
+    # The description: same logic as name cleaning (unified spaces)
     desc = str(desc).strip() if desc else ""
     desc = re.sub(r"\s+", " ", desc)
 
@@ -124,28 +124,28 @@ def normalize_specialty(code, desc):
 
 def normalize_phone(phone):
     """
-    بتاخد رقم تليفون خام وترجّع dict فيه نسختين:
+    Takes a raw phone number and returns a dict with two versions:
         {
-            "compare": "2125551234",       ← أرقام بس (للمقارنة)
-            "display": "(212) 555-1234"    ← شكل أمريكي جميل (للعرض)
+            "compare": "2125551234",       ← digits only (for comparison)
+            "display": "(212) 555-1234"    ← nice US format (for display)
         }
 
-    خطوات التنظيف:
-      1. نشيل أي حاجة مش رقم (شُرَط، أقواس، مسافات، +).
-      2. لو 11 خانة وبادئة بـ 1 (كود أمريكا) نشيل الـ 1.
-      3. لو مش 10 خانات في الآخر → رقم غير صالح، نرجّع فاضي.
+    Cleaning steps:
+      1. Strip anything that isn't a digit (dashes, parentheses, spaces, +).
+      2. If 11 digits and starts with 1 (US country code) strip the 1.
+      3. If not 10 digits in the end → invalid number, return empty.
     """
     if phone is None:
         return {"compare": "", "display": ""}
 
-    # 1) نسيب الأرقام بس
+    # 1) Keep digits only
     digits = re.sub(r"\D", "", str(phone))
 
-    # 2) لو 11 خانة وبادئة بـ 1، نشيل الـ 1
+    # 2) If 11 digits and starts with 1, strip the 1
     if len(digits) == 11 and digits.startswith("1"):
         digits = digits[1:]
 
-    # 3) لازم يكون 10 خانات، غير كده مش صالح
+    # 3) Must be 10 digits, otherwise invalid
     if len(digits) != 10:
         return {"compare": "", "display": ""}
 
@@ -154,10 +154,10 @@ def normalize_phone(phone):
 
 
 # ===========================================================================
-#  ADDRESS  ✅  (نسخة عميقة: توحيد اختصارات + فصل الوحدة)
+#  ADDRESS  ✅  (deep version: expand abbreviations + split out the unit)
 # ===========================================================================
 
-# قاموس توحيد اختصارات الشوارع → الشكل الكامل (كله lowercase للمطابقة)
+# Dictionary unifying street abbreviations → full form (all lowercase for matching)
 _STREET_ABBR = {
     "st": "street", "st.": "street",
     "ave": "avenue", "ave.": "avenue", "av": "avenue",
@@ -179,26 +179,26 @@ _STREET_ABBR = {
     "se": "southeast", "sw": "southwest",
 }
 
-# الكلمات اللي بتدل على رقم وحدة/سويت (بنفصلها لخانة لوحدها)
+# Words that indicate a unit/suite number (we split them into their own field)
 _UNIT_WORDS = {"suite", "ste", "ste.", "unit", "apt", "apt.",
                "apartment", "fl", "fl.", "floor", "rm", "room", "#"}
 
 
 def _expand_token(token):
-    """بتفك اختصار كلمة واحدة لو موجود في القاموس، غير كده تسيبها."""
+    """Expands a single word's abbreviation if present in the dictionary, otherwise leaves it."""
     key = token.lower()
     return _STREET_ABBR.get(key, key)
 
 
 def _smart_title(text):
     """
-    زي .title() بس بتسيب اللواحق الرقمية صح:
-        "42nd" تفضل "42nd" مش "42Nd"
+    Like .title() but keeps numeric suffixes correct:
+        "42nd" stays "42nd" not "42Nd"
         "main street" → "Main Street"
     """
     out = []
     for word in text.split():
-        # لو الكلمة بتبدأ برقم (زي 42nd, 3rd) نسيبها lowercase زي ما هي
+        # If the word starts with a digit (like 42nd, 3rd) keep it lowercase as is
         if word and word[0].isdigit():
             out.append(word.lower())
         else:
@@ -208,12 +208,12 @@ def _smart_title(text):
 
 def normalize_address(street, city, state, postal):
     """
-    نسخة عميقة: بتوحّد اختصارات الشارع وبتفصل رقم الوحدة/السويت.
+    Deep version: expands street abbreviations and splits out the unit/suite number.
 
-    بترجّع:
+    Returns:
         {
-            "street":  "456 North Park Avenue",  ← display (نظيف + اختصارات متفكّكة)
-            "unit":    "200",                     ← رقم الوحدة منفصل
+            "street":  "456 North Park Avenue",  ← display (clean + abbreviations expanded)
+            "unit":    "200",                     ← unit number split out
             "city":    "New York",
             "state":   "NY",
             "zip":     "10001",
@@ -221,48 +221,48 @@ def normalize_address(street, city, state, postal):
         }
     """
     raw = re.sub(r"\s+", " ", str(street or "").strip())
-    # نحط مسافة حوالين # عشان "#200" تتعامل زي "Suite 200"
+    # Put a space around # so "#200" is treated like "Suite 200"
     raw = re.sub(r"#", " # ", raw)
     raw = re.sub(r"\s+", " ", raw).strip()
 
-    # 1) نفصل رقم الوحدة (سويت/شقة/طابق)
+    # 1) Split out the unit number (suite/apartment/floor)
     unit = ""
-    # نقسّم على الفاصلة الأول (غالباً "123 Main St, Suite 200")
+    # Split on the first comma (usually "123 Main St, Suite 200")
     parts = [p.strip() for p in raw.split(",")]
     street_part = parts[0] if parts else ""
 
-    # ندوّر في باقي الأجزاء عن كلمة وحدة
+    # Look through the remaining parts for a unit word
     for p in parts[1:]:
         words = p.split()
         if words and words[0].lower().strip(".#") in {w.strip(".#") for w in _UNIT_WORDS}:
-            # ناخد الأرقام اللي بعد كلمة الوحدة
+            # Take the numbers that come after the unit word
             nums = re.findall(r"\w+", p)
             unit = nums[-1] if nums else ""
 
-    # لو السويت جوه الشارع نفسه (مفيش فاصلة)، ندوّر عليه
+    # If the suite is inside the street itself (no comma), look for it
     if not unit:
         tokens = street_part.split()
         for i, tok in enumerate(tokens):
             if tok.lower().strip(".#") in {w.strip(".#") for w in _UNIT_WORDS} or tok == "#":
-                # اللي بعده هو رقم الوحدة
+                # The one after it is the unit number
                 if i + 1 < len(tokens):
                     unit = tokens[i + 1].strip("#")
-                # نشيل كلمة الوحدة وما بعدها من الشارع
+                # Strip the unit word and what follows it from the street
                 street_part = " ".join(tokens[:i])
                 break
 
-    # 2) نوحّد اختصارات الشارع (كل كلمة)
+    # 2) Expand street abbreviations (each word)
     expanded = [_expand_token(t.strip(",")) for t in street_part.split()]
     street_compare = " ".join(expanded).strip()
     street_disp = _smart_title(street_compare)
 
-    # 3) باقي الأجزاء
+    # 3) Remaining parts
     city = re.sub(r"\s+", " ", str(city or "").strip())
     city_disp = city.title()
     state_disp = str(state or "").strip().upper()
     zip_digits = re.sub(r"\D", "", str(postal or ""))[:5]
 
-    # 4) نسخة المقارنة الموحّدة (الولاية تتوحّد لكود حرفين عشان "Florida" == "FL")
+    # 4) Unified compare version (the state is unified to a two-letter code so "Florida" == "FL")
     compare = "|".join([
         street_compare,
         unit,
@@ -359,7 +359,7 @@ def field_display_form(field, value):
 
 
 # ---------------------------------------------------------------------------
-# اختبارات سريعة — شغّل الملف مباشرة عشان تشوف النتيجة
+# Quick tests — run the file directly to see the result
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     name_tests = [
@@ -376,11 +376,11 @@ if __name__ == "__main__":
     ]
 
     print("=" * 70)
-    print("  اختبار normalize_name")
+    print("  normalize_name test")
     print("=" * 70)
     for raw in name_tests:
         result = normalize_name(raw)
-        print(f"المدخل  : {repr(raw)}")
+        print(f"Input  : {repr(raw)}")
         print(f"  display: {repr(result['display'])}")
         print(f"  compare: {repr(result['compare'])}")
         print("-" * 70)

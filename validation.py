@@ -1,15 +1,15 @@
 """
 validation.py
 -------------
-مركز التحقق من صحة البيانات (Validation Layer).
+Data validation hub (Validation Layer).
 
-أي بيانات داخلة لقاعدة البيانات بتعدّي من هنا الأول.
-كل عمود ليه دالة تقييم خاصة بيه.
+Any data entering the database passes through here first.
+Each column has its own dedicated validation function.
 
-الجاهز دلوقتي:
-  ✅ is_valid_npi()      — التحقق من الـ NPI
+Ready now:
+  ✅ is_valid_npi()      — NPI validation
 
-هنضيف بعدين:
+To be added later:
   ⬜ is_valid_phone()
   ⬜ is_valid_address()
   ⬜ is_valid_name()
@@ -22,84 +22,84 @@ validation.py
 
 def _luhn_check_digit(nine_digits: str) -> int:
     """
-    بتحسب الـ check digit لأول 9 أرقام من الـ NPI باستخدام معادلة Luhn.
-    (دالة مساعدة داخلية — الشرطة _ في الأول معناها إنها للاستخدام الداخلي بس)
+    Computes the check digit for the first 9 digits of the NPI using the Luhn formula.
+    (Internal helper function — the leading _ means it's for internal use only)
 
-    الخطوات (زي ملف CMS بالظبط):
-      1. ابدأ من اليمين، اضرب الأرقام في المراكز الفردية × 2.
-      2. لو الناتج رقمين (زي 14) اجمع رقميه (1+4).
-      3. اجمع الكل + ثابت 24.
-      4. قرّب لأقرب رقم بينتهي بصفر واطرح → الـ check digit.
+    Steps (exactly like the CMS document):
+      1. Start from the right, multiply digits in odd positions by 2.
+      2. If the result is two digits (like 14) sum its digits (1+4).
+      3. Sum everything + the constant 24.
+      4. Round up to the nearest number ending in zero and subtract → the check digit.
     """
-    total = 24  # الثابت اللي بيمثّل البادئة 80840
+    total = 24  # The constant representing the prefix 80840
     digits = [int(d) for d in nine_digits]
 
     for i, d in enumerate(reversed(digits)):
-        if i % 2 == 0:                # المراكز الفردية من اليمين → × 2
+        if i % 2 == 0:                # Odd positions from the right → × 2
             doubled = d * 2
             total += doubled // 10 + doubled % 10
-        else:                          # المراكز الزوجية → زي ما هي
+        else:                          # Even positions → as is
             total += d
 
     return (10 - (total % 10)) % 10
 
 
 def is_valid_npi(npi) -> bool:
-    """بترجّع True لو الـ NPI سليم، و False لو غلط."""
+    """Returns True if the NPI is valid, and False if invalid."""
     npi = str(npi).strip()
 
-    # 1) لازم 10 أرقام بالظبط (أرقام بس)
+    # 1) Must be exactly 10 digits (digits only)
     if not npi.isdigit() or len(npi) != 10:
         return False
 
-    # 2) أول رقم لازم 1 أو 2
+    # 2) First digit must be 1 or 2
     if npi[0] not in ("1", "2"):
         return False
 
-    # 3) الـ check digit لازم يطابق الحساب
+    # 3) The check digit must match the computation
     return _luhn_check_digit(npi[:9]) == int(npi[9])
 
 
 # ===========================================================================
-#  PHONE  ⬜  (هنبنيها بعدين)
+#  PHONE  ⬜  (we'll build it later)
 # ===========================================================================
 # def is_valid_phone(phone) -> bool:
 #     ...
 
 
 # ===========================================================================
-#  ADDRESS  ⬜  (هنبنيها بعدين)
+#  ADDRESS  ⬜  (we'll build it later)
 # ===========================================================================
 # def is_valid_address(address) -> bool:
 #     ...
 
 
 # ===========================================================================
-#  NAME  ⬜  (هنبنيها بعدين)
+#  NAME  ⬜  (we'll build it later)
 # ===========================================================================
 # def is_valid_name(name) -> bool:
 #     ...
 
 
 # ---------------------------------------------------------------------------
-# اختبارات سريعة — شغّل الملف مباشرة عشان تشوف النتيجة
+# Quick tests — run the file directly to see the result
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     npi_tests = [
-        ("1234567893", True,  "مثال CMS الرسمي — سليم"),
-        ("1234567890", False, "check digit غلط"),
-        ("3456789012", False, "بيبدأ بـ 3 (مش 1 أو 2)"),
-        ("123456789",  False, "9 أرقام بس"),
-        ("12345678933", False, "11 رقم"),
-        ("12345abcde",  False, "فيه حروف"),
+        ("1234567893", True,  "Official CMS example — valid"),
+        ("1234567890", False, "wrong check digit"),
+        ("3456789012", False, "starts with 3 (not 1 or 2)"),
+        ("123456789",  False, "only 9 digits"),
+        ("12345678933", False, "11 digits"),
+        ("12345abcde",  False, "contains letters"),
     ]
 
     print("=" * 55)
-    print("  اختبار is_valid_npi")
+    print("  Testing is_valid_npi")
     print("=" * 55)
     for npi, expected, note in npi_tests:
         result = is_valid_npi(npi)
-        mark = "✅" if result == expected else "❌ (غير متوقع!)"
-        status = "سليم" if result else "مرفوض"
+        mark = "✅" if result == expected else "❌ (unexpected!)"
+        status = "valid" if result else "rejected"
         print(f"{mark}  {npi:<13} → {status:<7} | {note}")
     print("=" * 55)

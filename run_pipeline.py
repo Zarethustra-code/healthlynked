@@ -1,16 +1,16 @@
 """
 run_pipeline.py
 ---------------
-بيشغّل كل مراحل النظام بضغطة واحدة، بالترتيب الصح:
+Runs every stage of the system with a single command, in the correct order:
 
-  1. database          → يعمل الجداول
-  2. fetch_data        → يجمّع البيانات من NPPES
-  3. make_second_source→ يعمل المصدر التاني
-  4. pull_quality      → يفحص جودة سحبة المصدر التاني
-  5. compare           → يكتشف التغييرات + ياخد القرار
-  6. apply_changes     → يطبّق AUTO + يحجز REVIEW
+  1. database          → creates the tables
+  2. fetch_data        → collects data from NPPES
+  3. make_second_source→ builds the second source
+  4. pull_quality      → checks the quality of the second source pull
+  5. compare           → detects changes + makes the decision
+  6. apply_changes     → applies AUTO + holds REVIEW
 
-شغّل ده بس:
+Just run this:
     python3 run_pipeline.py
 """
 
@@ -33,40 +33,40 @@ def banner(step, title):
 
 def main(fresh_start=True):
     start = time.time()
-    print("🚀 بدء تشغيل الـ Pipeline الكامل")
+    print("🚀 Starting the full Pipeline")
     print("=" * 60)
 
     if fresh_start and Path(DB_PATH).exists():
         Path(DB_PATH).unlink()
-        print("🗑️  اتمسحت قاعدة البيانات القديمة (بداية نظيفة)")
+        print("🗑️  Deleted the old database (clean start)")
 
-    # 1) الجداول
-    banner(1, "إنشاء الجداول")
+    # 1) Tables
+    banner(1, "Creating the tables")
     create_database()
 
-    # 2) التجميع
-    banner(2, "تجميع البيانات (NPPES)")
+    # 2) Collection
+    banner(2, "Collecting data (NPPES)")
     fetch_data.main()
 
-    # 3) المصدر التاني
-    banner(3, "إنشاء المصدر التاني")
+    # 3) Second source
+    banner(3, "Creating the second source")
     make_second_source.main()
 
-    # 4) جودة السحب
-    banner(4, "فحص جودة السحب")
+    # 4) Pull quality
+    banner(4, "Checking pull quality")
     pull_quality.print_report("external_data")
 
-    # 5) المقارنة
-    banner(5, "المقارنة وكشف التغييرات")
+    # 5) Comparison
+    banner(5, "Comparison and change detection")
     compare.main()
 
-    # 6) التطبيق
-    banner(6, "تطبيق التغييرات")
+    # 6) Application
+    banner(6, "Applying changes")
     apply_changes.main()
 
     elapsed = time.time() - start
     print("\n" + "=" * 60)
-    print(f"✅ الـ Pipeline كله خلص بنجاح في {elapsed:.1f} ثانية")
+    print(f"✅ The whole Pipeline finished successfully in {elapsed:.1f} seconds")
     print("=" * 60)
 
 

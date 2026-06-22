@@ -1,13 +1,13 @@
 """
 process.py
 ----------
-قلب المعالجة: بياخد البيانات، يقرّر لكل سجل، ويوزّعه:
+Processing core: takes the data, decides on each record, and routes it:
 
-  سليم   → جدول providers
-  مرفوض  → جدول providers_quarantine (مع سبب الرفض)
-  + كل عملية بتتسجّل في providers_audit_log
+  valid     → providers table
+  rejected  → providers_quarantine table (with the rejection reason)
+  + every operation is recorded in providers_audit_log
 
-بيعتمد على: validation.py + normalize.py + database.py
+Depends on: validation.py + normalize.py + database.py
 """
 
 import csv
@@ -26,9 +26,9 @@ MIN_NAME_LEN = 2
 
 def check_record(npi, name):
     """
-    بيفحص السجل ويرجّع:
-        (True,  "", clean_name)            لو سليم
-        (False, سبب الرفض, "")             لو مرفوض
+    Checks the record and returns:
+        (True,  "", clean_name)            if valid
+        (False, rejection_reason, "")      if rejected
     """
     if not is_valid_npi(npi):
         return False, "Invalid NPI", ""
@@ -57,7 +57,7 @@ def main():
         ok, reason, clean_name = check_record(npi, name)
 
         if ok:
-            # سليم → providers (INSERT OR IGNORE عشان لو متكرر)
+            # valid → providers (INSERT OR IGNORE in case it's a duplicate)
             cur.execute(
                 "INSERT OR IGNORE INTO providers (npi, name) VALUES (?, ?)",
                 (npi, clean_name),
@@ -70,7 +70,7 @@ def main():
                     (npi, "Passed validation"),
                 )
         else:
-            # مرفوض → quarantine (مع السبب) + status افتراضي Rejected
+            # rejected → quarantine (with the reason) + default status Rejected
             cur.execute(
                 "INSERT INTO providers_quarantine "
                 "(npi, name, rejection_reason, status) VALUES (?, ?, ?, 'Rejected')",
@@ -85,7 +85,7 @@ def main():
 
     conn.commit()
 
-    # نقرأ الأعداد النهائية من الجداول للتأكيد
+    # read the final counts from the tables for confirmation
     n_providers = cur.execute("SELECT COUNT(*) FROM providers").fetchone()[0]
     n_quar = cur.execute("SELECT COUNT(*) FROM providers_quarantine").fetchone()[0]
     n_audit = cur.execute("SELECT COUNT(*) FROM providers_audit_log").fetchone()[0]
@@ -93,14 +93,14 @@ def main():
     conn.close()
 
     print("=" * 55)
-    print("  المعالجة والتوزيع")
+    print("  Processing and Routing")
     print("=" * 55)
-    print(f"✅ اتقبلوا (providers)        : {accepted}")
-    print(f"🔒 اتعزلوا (quarantine)       : {quarantined}")
+    print(f"✅ Accepted (providers)       : {accepted}")
+    print(f"🔒 Quarantined (quarantine)   : {quarantined}")
     print("-" * 55)
-    print(f"📊 إجمالي providers           : {n_providers}")
-    print(f"📊 إجمالي quarantine          : {n_quar}")
-    print(f"📊 إجمالي audit_log           : {n_audit}")
+    print(f"📊 Total providers            : {n_providers}")
+    print(f"📊 Total quarantine           : {n_quar}")
+    print(f"📊 Total audit_log            : {n_audit}")
     print("=" * 55)
 
 

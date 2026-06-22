@@ -1,12 +1,12 @@
 """
 apply_changes.py
 ----------------
-بيطبّق التغييرات المقترحة من محرّك المقارنة.
+Applies the changes proposed by the comparison engine.
 
-  AUTO_UPDATE   →  يحدّث جدول providers فعلياً + status = 'applied'
-  NEEDS_REVIEW  →  يسيبه لقائمة المراجعة + status = 'pending_review'
+  AUTO_UPDATE   →  actually updates the providers table + status = 'applied'
+  NEEDS_REVIEW  →  leaves it for the review queue + status = 'pending_review'
 
-كل فعل بيتسجّل في providers_audit_log (تتبّع كامل).
+Every action is recorded in providers_audit_log (full audit trail).
 """
 
 import sqlite3
@@ -15,7 +15,7 @@ from pathlib import Path
 BASE = Path(__file__).parent
 DB_PATH = BASE / "healthlynked.db"
 
-# الأعمدة المسموح تحديثها في providers (أمان: مايتحدّثش غير دول)
+# Columns allowed to be updated in providers (safety: only these get updated)
 UPDATABLE = {"phone", "street", "unit", "city", "state", "zip", "specialty", "is_active"}
 
 
@@ -23,7 +23,7 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    # نجيب التغييرات الجديدة بس (اللي لسه ماتطبّقتش)
+    # Fetch only the new changes (the ones not applied yet)
     changes = cur.execute(
         "SELECT id, npi, field, old_value, new_value, source, decision "
         "FROM proposed_changes WHERE status = 'new'"
@@ -46,29 +46,29 @@ def main():
                     (cid,))
                 cur.execute(
                     "INSERT INTO providers_audit_log (npi, action, detail) VALUES (?, 'FLAGGED_REVIEW', ?)",
-                    (npi, f"{field}: '{old_val}' → '{new_val}' (من {source}) [blocked auto: high-stakes]"))
+                    (npi, f"{field}: '{old_val}' → '{new_val}' (from {source}) [blocked auto: high-stakes]"))
                 pending += 1
                 continue
 
-            # أمان: نتأكد العمود مسموح تحديثه
+            # Safety: make sure the column is allowed to be updated
             if field not in UPDATABLE:
                 skipped += 1
                 continue
 
-            # نحدّث جدول providers فعلياً
+            # Actually update the providers table
             cur.execute(
                 f"UPDATE providers SET {field} = ? WHERE npi = ?",
                 (new_val, npi),
             )
-            # نعلّم التغيير إنه اتطبّق
+            # Mark the change as applied
             cur.execute(
                 "UPDATE proposed_changes SET status = 'applied' WHERE id = ?",
                 (cid,),
             )
-            # تتبّع في الـ audit
+            # Record in the audit trail
             cur.execute(
                 "INSERT INTO providers_audit_log (npi, action, detail) VALUES (?, 'AUTO_UPDATED', ?)",
-                (npi, f"{field}: '{old_val}' → '{new_val}' (من {source})"),
+                (npi, f"{field}: '{old_val}' → '{new_val}' (from {source})"),
             )
             applied += 1
 
@@ -79,27 +79,27 @@ def main():
             )
             cur.execute(
                 "INSERT INTO providers_audit_log (npi, action, detail) VALUES (?, 'FLAGGED_REVIEW', ?)",
-                (npi, f"{field}: '{old_val}' → '{new_val}' (من {source})"),
+                (npi, f"{field}: '{old_val}' → '{new_val}' (from {source})"),
             )
             pending += 1
 
     conn.commit()
 
-    # قائمة المراجعة الحالية
+    # Current review queue
     review_count = cur.execute(
         "SELECT COUNT(*) FROM proposed_changes WHERE status = 'pending_review'"
     ).fetchone()[0]
     conn.close()
 
     print("=" * 55)
-    print("  تطبيق التغييرات")
+    print("  Applying changes")
     print("=" * 55)
-    print(f"🟢 اتطبّقوا تلقائي (providers)  : {applied}")
-    print(f"🟠 راحوا للمراجعة البشرية      : {pending}")
+    print(f"🟢 Auto-applied (providers)     : {applied}")
+    print(f"🟠 Sent to human review         : {pending}")
     if skipped:
-        print(f"⏭️  اتجاهلوا (عمود غير مسموح)   : {skipped}")
+        print(f"⏭️  Skipped (column not allowed) : {skipped}")
     print("-" * 55)
-    print(f"📋 قائمة المراجعة الحالية      : {review_count}")
+    print(f"📋 Current review queue         : {review_count}")
     print("=" * 55)
 
 

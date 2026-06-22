@@ -1,23 +1,23 @@
 """
 pull_quality.py
 ---------------
-تقييم جودة السحبة (Pull Quality Score) — خطوة 4 من خريطة النظام.
+Pull Quality Score evaluation — step 4 of the system map.
 
-بيفحص "الدفعة كلها" (مش السجل الواحد) ويدّي درجة من 100.
-دالة عامة: تاخد اسم أي جدول وتفحصه.
+It inspects "the whole batch" (not a single record) and gives a score out of 100.
+General-purpose function: takes the name of any table and inspects it.
 
-الأوزان (زي خريطة النظام بالظبط):
-  السحب بدون errors            20
-  عدد الصفوف منطقي             15
-  الأعمدة الأساسية موجودة      15
-  البيانات مش ناقصة بشكل كبير  15
-  مفيش تكرارات غريبة           15
-  القيم في الأعمدة الصح        10
-  تاريخ السحب واضح             10
+The weights (exactly as in the system map):
+  Pull with no errors          20
+  Row count is reasonable      15
+  Key columns are present      15
+  Data is not heavily missing  15
+  No strange duplicates        15
+  Values in the right columns  10
+  Pull date is clear           10
   ─────────────────────────  ────
-  الإجمالي                    100
+  Total                       100
 
-قاعدة ذهبية: كل نقص في الدرجة له سبب واضح وإجراء.
+Golden rule: every point lost has a clear cause and an action.
 """
 
 import sqlite3
@@ -26,58 +26,58 @@ from pathlib import Path
 BASE = Path(__file__).parent
 DB_PATH = BASE / "healthlynked.db"
 
-# الأعمدة الأساسية المتوقعة في أي سحبة مزوّدين
+# The key columns expected in any provider pull
 KEY_COLUMNS = ["npi", "phone", "city", "state"]
 
-# العدد المتوقع تقريباً (لو قلّ كتير = خطر)
-# ملاحظة: TARGET في fetch_data = 1000، والمصدر التاني صف لكل طبيب،
-# فأقصى عدد ممكن ≈ 1000. لازم EXPECTED_MIN يفضل أقل من ده وإلا الفحص هيفشل دايمًا.
-EXPECTED_MIN = 800    # أقل من كده يعتبر سحبة ناقصة
+# The approximate expected count (if it drops a lot = danger)
+# Note: TARGET in fetch_data = 1000, and the second source is one row per doctor,
+# so the maximum possible count ≈ 1000. EXPECTED_MIN must stay below that, otherwise the check always fails.
+EXPECTED_MIN = 800    # below this is considered an incomplete pull
 
 
 def check_pull_quality(table, expected_min=EXPECTED_MIN):
     """
-    بتفحص جودة سحبة (جدول) وترجّع (score, report).
-    report = قائمة بكل فحص: (الاسم، النقاط المكتسبة، النقاط الكاملة، السبب).
+    Inspects the quality of a pull (table) and returns (score, report).
+    report = a list of every check: (name, points earned, full points, reason).
     """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    # نجيب أسماء الأعمدة الموجودة فعلاً
+    # Get the names of the columns that actually exist
     existing_cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table})")]
 
-    # نجيب كل الصفوف
+    # Get all the rows
     rows = cur.execute(f"SELECT * FROM {table}").fetchall()
     total = len(rows)
     col_index = {name: i for i, name in enumerate(existing_cols)}
 
     report = []
 
-    # --- 1) السحب بدون errors (20) : فيه بيانات أصلاً؟ ---
+    # --- 1) Pull with no errors (20): is there any data at all? ---
     if total > 0:
-        report.append(("السحب بدون errors", 20, 20, "السحبة فيها بيانات"))
+        report.append(("Pull with no errors", 20, 20, "The pull contains data"))
     else:
-        report.append(("السحب بدون errors", 0, 20, "❌ السحبة فاضية تماماً"))
+        report.append(("Pull with no errors", 0, 20, "❌ The pull is completely empty"))
 
-    # --- 2) عدد الصفوف منطقي (15) ---
+    # --- 2) Row count is reasonable (15) ---
     if total >= expected_min:
-        report.append(("عدد الصفوف منطقي", 15, 15, f"{total} صف (متوقع ≥ {expected_min})"))
+        report.append(("Row count is reasonable", 15, 15, f"{total} rows (expected ≥ {expected_min})"))
     else:
         pts = round(15 * total / expected_min) if expected_min else 0
-        report.append(("عدد الصفوف منطقي", pts, 15,
-                        f"⚠️ {total} بس (متوقع ≥ {expected_min}) — drop مفاجئ"))
+        report.append(("Row count is reasonable", pts, 15,
+                        f"⚠️ {total} only (expected ≥ {expected_min}) — sudden drop"))
 
-    # --- 3) الأعمدة الأساسية موجودة (15) ---
+    # --- 3) Key columns are present (15) ---
     missing_cols = [c for c in KEY_COLUMNS if c not in existing_cols]
     if not missing_cols:
-        report.append(("الأعمدة الأساسية موجودة", 15, 15, "كل الأعمدة المهمة موجودة"))
+        report.append(("Key columns are present", 15, 15, "All important columns are present"))
     else:
         pts = round(15 * (len(KEY_COLUMNS) - len(missing_cols)) / len(KEY_COLUMNS))
-        report.append(("الأعمدة الأساسية موجودة", pts, 15,
-                        f"❌ ناقص: {', '.join(missing_cols)}"))
+        report.append(("Key columns are present", pts, 15,
+                        f"❌ missing: {', '.join(missing_cols)}"))
 
-    # --- 4) البيانات مش ناقصة بشكل كبير (15) ---
-    # نحسب نسبة الفاضي في الأعمدة المهمة الموجودة
+    # --- 4) Data is not heavily missing (15) ---
+    # Compute the empty ratio in the important columns that are present
     present_keys = [c for c in KEY_COLUMNS if c in col_index]
     empty_count = 0
     cells = 0
@@ -89,48 +89,48 @@ def check_pull_quality(table, expected_min=EXPECTED_MIN):
                 empty_count += 1
     empty_ratio = (empty_count / cells) if cells else 0
     if empty_ratio <= 0.05:
-        report.append(("البيانات مش ناقصة", 15, 15,
-                        f"نسبة الفاضي {empty_ratio:.1%} (مقبولة)"))
+        report.append(("Data is not missing", 15, 15,
+                        f"empty ratio {empty_ratio:.1%} (acceptable)"))
     else:
         pts = max(0, round(15 * (1 - empty_ratio)))
-        report.append(("البيانات مش ناقصة", pts, 15,
-                        f"⚠️ نسبة الفاضي {empty_ratio:.1%} (عالية)"))
+        report.append(("Data is not missing", pts, 15,
+                        f"⚠️ empty ratio {empty_ratio:.1%} (high)"))
 
-    # --- 5) مفيش تكرارات غريبة (15) ---
+    # --- 5) No strange duplicates (15) ---
     if "npi" in col_index:
         npis = [row[col_index["npi"]] for row in rows]
         unique = len(set(npis))
         dup_ratio = 1 - (unique / total) if total else 0
         if dup_ratio <= 0.02:
-            report.append(("مفيش تكرارات غريبة", 15, 15,
-                            f"{unique} فريد من {total}"))
+            report.append(("No strange duplicates", 15, 15,
+                            f"{unique} unique out of {total}"))
         else:
             pts = max(0, round(15 * (1 - dup_ratio)))
-            report.append(("مفيش تكرارات غريبة", pts, 15,
-                            f"⚠️ تكرار {dup_ratio:.1%}"))
+            report.append(("No strange duplicates", pts, 15,
+                            f"⚠️ duplication {dup_ratio:.1%}"))
     else:
-        report.append(("مفيش تكرارات غريبة", 0, 15, "❌ مفيش عمود npi للفحص"))
+        report.append(("No strange duplicates", 0, 15, "❌ no npi column to check"))
 
-    # --- 6) القيم في الأعمدة الصح (10) : فحص بسيط — الـ npi 10 أرقام ---
+    # --- 6) Values in the right columns (10): a simple check — the npi is 10 digits ---
     if "npi" in col_index:
         bad = sum(1 for row in rows
                   if not str(row[col_index["npi"]] or "").isdigit()
                   or len(str(row[col_index["npi"]] or "")) != 10)
         bad_ratio = bad / total if total else 0
         if bad_ratio <= 0.02:
-            report.append(("القيم في الأعمدة الصح", 10, 10, "الـ NPI في شكله الصح"))
+            report.append(("Values in the right columns", 10, 10, "The NPI is in the right form"))
         else:
             pts = max(0, round(10 * (1 - bad_ratio)))
-            report.append(("القيم في الأعمدة الصح", pts, 10,
-                            f"⚠️ {bad_ratio:.1%} NPI شكلهم غلط"))
+            report.append(("Values in the right columns", pts, 10,
+                            f"⚠️ {bad_ratio:.1%} NPIs have the wrong form"))
     else:
-        report.append(("القيم في الأعمدة الصح", 5, 10, "مفيش npi للفحص"))
+        report.append(("Values in the right columns", 5, 10, "no npi to check"))
 
-    # --- 7) تاريخ السحب واضح (10) ---
+    # --- 7) Pull date is clear (10) ---
     if "fetched_at" in existing_cols:
-        report.append(("تاريخ السحب واضح", 10, 10, "fetched_at موجود"))
+        report.append(("Pull date is clear", 10, 10, "fetched_at is present"))
     else:
-        report.append(("تاريخ السحب واضح", 0, 10, "⚠️ مفيش عمود تاريخ"))
+        report.append(("Pull date is clear", 0, 10, "⚠️ no date column"))
 
     conn.close()
 
@@ -142,7 +142,7 @@ def print_report(table):
     score, report = check_pull_quality(table)
 
     print("=" * 60)
-    print(f"  تقرير جودة السحب: {table}")
+    print(f"  Pull Quality Report: {table}")
     print("=" * 60)
     for name, pts, full, reason in report:
         mark = "✅" if pts == full else "⚠️ "
@@ -150,13 +150,13 @@ def print_report(table):
     print("-" * 60)
     print(f"  📊 Pull Quality Score: {score}/100")
 
-    # الحكم + الإجراء (زي أمثلة الرسم)
+    # The verdict + action (like the diagram examples)
     if score >= 85:
-        print("  ✅ السحبة سليمة — كمّل للمقارنة")
+        print("  ✅ The pull is healthy — proceed to comparison")
     elif score >= 60:
-        print("  ⚠️  السحبة فيها ملاحظات — راجع الأسباب قبل المقارنة")
+        print("  ⚠️  The pull has notes — review the causes before comparing")
     else:
-        print("  ❌ السحبة معطوبة — أوقف المقارنة وحقّق في السبب")
+        print("  ❌ The pull is broken — stop the comparison and investigate the cause")
     print("=" * 60)
 
 

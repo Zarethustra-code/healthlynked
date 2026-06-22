@@ -1,20 +1,20 @@
 """
 database.py
 -----------
-بينشئ ويدير قاعدة بيانات HealthLynked (SQLite).
+Creates and manages the HealthLynked database (SQLite).
 
-الجداول:
-  1. providers            → السجلات السليمة (اللي عدّت التحقق)
-  2. providers_quarantine → السجلات المرفوضة (معزولة مع سبب الرفض)
-  3. providers_audit_log  → سجل كل العمليات (Audit Trail)
-  4. external_data        → بيانات المصدر التاني للمقارنة
-  5. proposed_changes     → التغييرات المقترحة من محرّك المقارنة
+Tables:
+  1. providers            → valid records (those that passed validation)
+  2. providers_quarantine → rejected records (isolated with rejection reason)
+  3. providers_audit_log  → log of all operations (Audit Trail)
+  4. external_data        → second-source data for comparison
+  5. proposed_changes     → changes proposed by the comparison engine
 
-التشغيل:
-    python database.py            # ينشئ/يحدّث القاعدة
-    python database.py --reset     # يمسح ويعيد الإنشاء من الصفر (خطر!)
+Usage:
+    python database.py            # creates/updates the database
+    python database.py --reset     # wipes and recreates from scratch (dangerous!)
 
-الاستيراد في كود تاني:
+Importing into other code:
     from database import get_connection, create_database
     with get_connection() as conn:
         conn.execute("SELECT * FROM providers")
@@ -30,21 +30,21 @@ from typing import Iterator
 
 DB_PATH = Path(__file__).parent / "healthlynked.db"
 
-# نسخة المخطّط — زوّدها لو غيّرت الـ schema عشان تعرف تعمل migrations بعدين
+# Schema version — bump it whenever you change the schema so you can run migrations later
 SCHEMA_VERSION = 1
 
 
 # =====================================================================
-# الاتصال
+# Connection
 # =====================================================================
 @contextmanager
 def get_connection(db_path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
     """
-    اتصال آمن بقاعدة البيانات كـ context manager:
-      - بيفعّل foreign keys (مطفية افتراضيًا في SQLite!)
-      - بيفعّل WAL عشان قراءة/كتابة أسرع وأأمن
-      - row_factory = Row عشان توصل للأعمدة بالاسم (row["name"])
-      - بيعمل commit لو نجح، rollback لو حصل استثناء، ويقفل دايمًا
+    A safe database connection as a context manager:
+      - enables foreign keys (disabled by default in SQLite!)
+      - enables WAL for faster and safer reads/writes
+      - row_factory = Row so you can access columns by name (row["name"])
+      - commits on success, rolls back on exception, and always closes
     """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -61,16 +61,16 @@ def get_connection(db_path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
 
 
 # =====================================================================
-# تعريف المخطّط (DDL)
+# Schema definition (DDL)
 # =====================================================================
 SCHEMA = [
     # -----------------------------------------------------------------
-    # 1) جدول الأطباء السليمين — السجل الرسمي (source of truth)
+    # 1) Valid providers table — the official record (source of truth)
     # -----------------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS providers (
         npi           TEXT    PRIMARY KEY
-                              -- لازم 10 أرقام بالظبط؛ GLOB متطابق من أول النص لآخره
+                              -- must be exactly 10 digits; GLOB matches the whole string start to end
                               CHECK (npi GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
         name          TEXT    NOT NULL CHECK (length(trim(name)) > 0),
         taxonomy_code TEXT,
@@ -89,7 +89,7 @@ SCHEMA = [
     """,
 
     # -----------------------------------------------------------------
-    # 2) جدول العزل — السجلات المرفوضة
+    # 2) Quarantine table — rejected records
     # -----------------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS providers_quarantine (
@@ -105,7 +105,7 @@ SCHEMA = [
     """,
 
     # -----------------------------------------------------------------
-    # 3) جدول سجل العمليات — Audit Trail
+    # 3) Operations log table — Audit Trail
     # -----------------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS providers_audit_log (
@@ -120,7 +120,7 @@ SCHEMA = [
     """,
 
     # -----------------------------------------------------------------
-    # 4) جدول المصدر الخارجي — بيانات المصدر التاني للمقارنة
+    # 4) External source table — second-source data for comparison
     # -----------------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS external_data (
@@ -140,7 +140,7 @@ SCHEMA = [
     """,
 
     # -----------------------------------------------------------------
-    # 5) جدول التغييرات المقترحة — مخرجات محرّك المقارنة
+    # 5) Proposed changes table — output of the comparison engine
     # -----------------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS proposed_changes (
@@ -161,7 +161,7 @@ SCHEMA = [
     """,
 ]
 
-# فهارس عشان الأداء — كل الاستعلامات الشائعة بتدور بـ npi أو status
+# Indexes for performance — all common queries look up by npi or status
 INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_audit_npi          ON providers_audit_log (npi)",
     "CREATE INDEX IF NOT EXISTS idx_audit_action       ON providers_audit_log (action)",
@@ -173,16 +173,16 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_providers_active    ON providers (is_active)",
 ]
 
-# تريجر يحدّث updated_at تلقائيًا عند أي تعديل في providers
+# Trigger that updates updated_at automatically on any change to providers
 TRIGGERS = [
     """
     CREATE TRIGGER IF NOT EXISTS trg_providers_updated_at
     AFTER UPDATE ON providers
     FOR EACH ROW
-    -- الشرط ده بيمنع التكرار اللانهائي ويحترم أي updated_at اتحطّ يدوي
+    -- this condition prevents infinite recursion and respects any manually set updated_at
     WHEN NEW.updated_at = OLD.updated_at
     BEGIN
-        -- rowid بدل npi: يشتغل صح حتى لو الـ npi نفسه اتغيّر
+        -- rowid instead of npi: works correctly even if the npi itself changed
         UPDATE providers SET updated_at = datetime('now') WHERE rowid = NEW.rowid;
     END
     """,
@@ -190,10 +190,10 @@ TRIGGERS = [
 
 
 # =====================================================================
-# الإنشاء / إعادة الضبط
+# Creation / reset
 # =====================================================================
 def create_database(db_path: Path = DB_PATH) -> None:
-    """ينشئ كل الجداول والفهارس والتريجرات (آمن للتشغيل أكتر من مرة)."""
+    """Creates all tables, indexes, and triggers (safe to run more than once)."""
     with get_connection(db_path) as conn:
         cur = conn.cursor()
         for ddl in SCHEMA:
@@ -204,17 +204,17 @@ def create_database(db_path: Path = DB_PATH) -> None:
             cur.execute(trg)
         cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
-    print(f"✅ قاعدة البيانات اتنشأت بنجاح ({len(SCHEMA)} جداول، نسخة المخطّط v{SCHEMA_VERSION})")
-    print(f"📁 المكان: {db_path}")
+    print(f"✅ Database created successfully ({len(SCHEMA)} tables, schema version v{SCHEMA_VERSION})")
+    print(f"📁 Location: {db_path}")
 
 
 def reset_database(db_path: Path = DB_PATH) -> None:
-    """يمسح ملف القاعدة بالكامل ويعيد إنشاءه من الصفر. ⚠️ بيمسح كل البيانات."""
-    for suffix in ("", "-wal", "-shm"):  # امسح ملفات WAL المصاحبة كمان
+    """Deletes the entire database file and recreates it from scratch. ⚠️ Wipes all data."""
+    for suffix in ("", "-wal", "-shm"):  # delete the accompanying WAL files too
         p = Path(str(db_path) + suffix)
         if p.exists():
             p.unlink()
-    print("🗑️  اتمسحت القاعدة القديمة.")
+    print("🗑️  Old database deleted.")
     create_database(db_path)
 
 
@@ -222,20 +222,20 @@ def reset_database(db_path: Path = DB_PATH) -> None:
 # CLI
 # =====================================================================
 def main() -> None:
-    parser = argparse.ArgumentParser(description="إدارة قاعدة بيانات HealthLynked")
+    parser = argparse.ArgumentParser(description="HealthLynked database management")
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="يمسح القاعدة ويعيد إنشاءها من الصفر (بيمسح كل البيانات!)",
+        help="wipes the database and recreates it from scratch (wipes all data!)",
     )
     args = parser.parse_args()
 
     if args.reset:
-        confirm = input("⚠️  ده هيمسح كل البيانات. اكتب 'yes' عشان تأكّد: ").strip().lower()
+        confirm = input("⚠️  This will wipe all data. Type 'yes' to confirm: ").strip().lower()
         if confirm == "yes":
             reset_database()
         else:
-            print("❌ اتلغت العملية.")
+            print("❌ Operation cancelled.")
     else:
         create_database()
 

@@ -1,22 +1,23 @@
 """
 test_pipeline.py
 ----------------
-اختبار تكامل (integration test) للـ pipeline من غير إنترنت.
+Integration test for the pipeline without internet.
 
-الفكرة:
-  بدل ما نسحب من NPPES (شبكة + بطيء + مش ثابت)، بنزرع جدول providers
-  بإيدينا (ده بالظبط مخرج خطوة fetch)، وبنحطّ مصدر تاني (external_data)
-  بفروقات معروفة سلفًا — فنقدر نتأكد من قرار كل حقل بالظبط.
+The idea:
+  Instead of fetching from NPPES (network + slow + not deterministic), we seed
+  the providers table by hand (this is exactly the output of the fetch step),
+  and we add a second source (external_data) with differences known in advance —
+  so we can verify the decision for each field exactly.
 
-  بيغطّي: compare → apply_changes → audit_log → export_review
+  Covers: compare -> apply_changes -> audit_log -> export_review
 
-  ده كمان regression test للـ bugs اللي اتصلّحت:
-    • CHECK بتاع audit_log كان بيرفض AUTO_UPDATED / FLAGGED_REVIEW
-      (كان بيكسّر Stage 6 بالكامل).
-    • تريجر updated_at لازم يضرب عند التحديث التلقائي بس.
+  This is also a regression test for the bugs that were fixed:
+    - The audit_log CHECK constraint used to reject AUTO_UPDATED / FLAGGED_REVIEW
+      (which broke Stage 6 entirely).
+    - The updated_at trigger must fire only on an automatic update.
 
-التشغيل:
-    python3 test_pipeline.py            # أو
+Running:
+    python3 test_pipeline.py            # or
     python3 -m unittest -v
 """
 
@@ -36,30 +37,30 @@ import apply_changes
 import export_review
 import make_second_source
 
-# الأعمدة الكاملة اللي بنزرع بيها providers (نفس اللي fetch_data بيكتبها)
+# Full set of columns we seed providers with (the same ones fetch_data writes)
 _PROVIDER_COLS = ("npi", "name", "taxonomy_code", "specialty", "is_active",
                   "phone", "street", "unit", "city", "state", "zip")
 
-# قيم مشتركة لكل الأطباء — أي اختلاف هنحطّه عمدًا في المصدر التاني
+# Values shared by all providers — any difference is injected deliberately in the second source
 _COMMON = dict(
     name="Dr Test", taxonomy_code="207RC0000X", specialty="Cardiovascular Disease",
     is_active=1, phone="(212) 555-1111", street="100 Main Street", unit="",
     city="New York", state="NY", zip="10001",
 )
 
-_OLD_TS = "2000-01-01 00:00:00"   # تاريخ قديم عشان نتأكد التريجر بيحدّثه
+_OLD_TS = "2000-01-01 00:00:00"   # an old date so we can confirm the trigger updates it
 
 
 def _quiet(fn, *a, **k):
-    """بيشغّل دالة وهو ساكت (بيبلع الـ print بتاعها)."""
+    """Runs a function silently (swallowing its print output)."""
     with redirect_stdout(io.StringIO()):
         return fn(*a, **k)
 
 
 class _TempDBTest(unittest.TestCase):
-    """أساس مشترك: قاعدة بيانات مؤقتة + توجيه كل الموديولات ليها."""
+    """Shared base: a temporary database + pointing all modules at it."""
 
-    # الموديولات اللي بتقرا DB_PATH كـ global وقت التشغيل
+    # The modules that read DB_PATH as a global at run time
     _MODULES = (compare, apply_changes, export_review, make_second_source)
 
     def setUp(self):
@@ -70,7 +71,7 @@ class _TempDBTest(unittest.TestCase):
 
         _quiet(database.create_database, self.db)
 
-        # نوجّه كل موديول للقاعدة المؤقتة، ونحفظ الأصل عشان نرجّعه
+        # Point every module at the temporary database, saving the original to restore it
         self._restore = []
         for mod in self._MODULES:
             self._restore.append((mod, "DB_PATH", mod.DB_PATH))
@@ -83,7 +84,7 @@ class _TempDBTest(unittest.TestCase):
             setattr(mod, attr, val)
         self._tmp.cleanup()
 
-    # --- أدوات مساعدة ---
+    # --- Helper utilities ---
     def _conn(self):
         c = sqlite3.connect(self.db)
         c.row_factory = sqlite3.Row
@@ -97,7 +98,7 @@ class _TempDBTest(unittest.TestCase):
                 f"VALUES ({','.join('?' * len(_PROVIDER_COLS))})",
                 tuple(vals[k] for k in _PROVIDER_COLS),
             )
-            # نخلّي الطوابع قديمة عشان نقدر نتأكد التريجر ضرب بعدين
+            # Make the timestamps old so we can confirm the trigger fired afterwards
             c.execute(
                 "UPDATE providers SET created_at=?, updated_at=? WHERE npi=?",
                 (_OLD_TS, _OLD_TS, npi),
@@ -119,11 +120,11 @@ class _TempDBTest(unittest.TestCase):
 
 class PipelineIntegrationTest(_TempDBTest):
     """
-    أربع حالات مصمّمة عشان كل قرار يطلع ثابت ومتوقّع:
-      P1: تليفون اتغيّر      → ثقة عالية → AUTO_UPDATE
-      P2: مدينة اتغيّرت      → ثقة متوسطة → NEEDS_REVIEW
-      P3: حالة (is_active)   → المصدر مش صاحب سلطة → NEEDS_REVIEW
-      P4: زي الأصل بالظبط     → مفيش تغيير
+    Four cases designed so every decision is stable and predictable:
+      P1: phone changed        -> high confidence -> AUTO_UPDATE
+      P2: city changed         -> medium confidence -> NEEDS_REVIEW
+      P3: status (is_active)   -> source is not authoritative -> NEEDS_REVIEW
+      P4: identical to base     -> no change
     """
 
     def setUp(self):
@@ -133,12 +134,12 @@ class PipelineIntegrationTest(_TempDBTest):
         self._add_provider("1000000002")
         self._add_provider("1000000003")
         self._add_provider("1000000004")
-        # المصدر التاني — كل صف بيغيّر حقل واحد بس، والباقي زيّ الأصل
+        # The second source — each row changes exactly one field, the rest matches the base
         self._add_external("1000000001", phone="(212) 555-2222")     # AUTO
         self._add_external("1000000002", city="Brooklyn")            # REVIEW
         self._add_external("1000000003", is_active=0)                # REVIEW
-        self._add_external("1000000004")                            # لا تغيير
-        # نشغّل المرحلتين قيد الاختبار
+        self._add_external("1000000004")                            # no change
+        # Run the two stages under test
         _quiet(compare.main)
         _quiet(apply_changes.main)
 
@@ -150,7 +151,7 @@ class PipelineIntegrationTest(_TempDBTest):
     def test_compare_detects_exactly_the_seeded_changes(self):
         ch = self._changes_by_npi()
         self.assertEqual(set(ch), {"1000000001", "1000000002", "1000000003"},
-                         "لازم 3 تغييرات بالظبط — P4 المتطابق مايتسجّلش")
+                         "Exactly 3 changes expected — the identical P4 is not recorded")
         self.assertEqual(ch["1000000001"]["field"], "phone")
         self.assertEqual(ch["1000000002"]["field"], "city")
         self.assertEqual(ch["1000000003"]["field"], "is_active")
@@ -160,16 +161,16 @@ class PipelineIntegrationTest(_TempDBTest):
         self.assertEqual(ch["1000000001"]["decision"], "AUTO_UPDATE")
         self.assertEqual(ch["1000000002"]["decision"], "NEEDS_REVIEW")
         self.assertEqual(ch["1000000003"]["decision"], "NEEDS_REVIEW")
-        # أرقام الثقة المتوقّعة من المعادلة الموحّدة في confidence.py:
-        #   phone (clinic=practice → صاحب سلطة): 0.80 + 0.15*(1-0.80) = 0.83 ≥ bar 0.83 → AUTO
-        #   city  (صاحب سلطة كمان): 0.83 < bar 0.86 → REVIEW
-        #   is_active 1→0: 0.80، وقاعدة أمان صارمة (إلغاء تفعيل) → REVIEW دايمًا
+        # Expected confidence numbers from the unified formula in confidence.py:
+        #   phone (clinic=practice -> authoritative): 0.80 + 0.15*(1-0.80) = 0.83 >= bar 0.83 -> AUTO
+        #   city  (authoritative too): 0.83 < bar 0.86 -> REVIEW
+        #   is_active 1->0: 0.80, and a strict safety rule (deactivation) -> REVIEW always
         self.assertAlmostEqual(ch["1000000001"]["confidence"], 0.83, places=2)
         self.assertAlmostEqual(ch["1000000002"]["confidence"], 0.83, places=2)
         self.assertAlmostEqual(ch["1000000003"]["confidence"], 0.80, places=2)
 
     def test_every_change_has_a_reason(self):
-        # Explainability: مفيش قرار من غير شرح
+        # Explainability: no decision without an explanation
         for r in self._changes_by_npi().values():
             self.assertTrue(r["reason"] and r["reason"].strip())
 
@@ -177,7 +178,7 @@ class PipelineIntegrationTest(_TempDBTest):
         with self._conn() as c:
             phone = c.execute(
                 "SELECT phone FROM providers WHERE npi='1000000001'").fetchone()[0]
-        self.assertEqual(phone, "(212) 555-2222", "التحديث التلقائي لازم يتكتب فعلاً")
+        self.assertEqual(phone, "(212) 555-2222", "The automatic update must actually be written")
 
     def test_review_rows_do_not_touch_providers(self):
         with self._conn() as c:
@@ -185,7 +186,7 @@ class PipelineIntegrationTest(_TempDBTest):
                 "SELECT city FROM providers WHERE npi='1000000002'").fetchone()[0]
             active = c.execute(
                 "SELECT is_active FROM providers WHERE npi='1000000003'").fetchone()[0]
-        self.assertEqual(city, "New York", "اللي للمراجعة مايتطبّقش")
+        self.assertEqual(city, "New York", "Items flagged for review are not applied")
         self.assertEqual(active, 1)
 
     def test_proposed_changes_statuses(self):
@@ -197,8 +198,8 @@ class PipelineIntegrationTest(_TempDBTest):
 
     def test_audit_log_actions_regression(self):
         """
-        الـ regression الأساسي: قبل الإصلاح كان CHECK بيرفض
-        AUTO_UPDATED و FLAGGED_REVIEW فالمرحلة دي كانت بتكراش.
+        The core regression: before the fix the CHECK constraint rejected
+        AUTO_UPDATED and FLAGGED_REVIEW, so this stage used to crash.
         """
         with self._conn() as c:
             actions = dict(c.execute(
@@ -212,64 +213,65 @@ class PipelineIntegrationTest(_TempDBTest):
                 "SELECT updated_at FROM providers WHERE npi='1000000001'").fetchone()[0]
             review = c.execute(
                 "SELECT updated_at FROM providers WHERE npi='1000000002'").fetchone()[0]
-        self.assertNotEqual(auto, _OLD_TS, "التريجر لازم يحدّث updated_at للصف المتغيّر")
-        self.assertEqual(review, _OLD_TS, "الصف اللي ماتغيّرش لازم يفضل بطابعه القديم")
+        self.assertNotEqual(auto, _OLD_TS, "The trigger must update updated_at for the changed row")
+        self.assertEqual(review, _OLD_TS, "The unchanged row must keep its old timestamp")
 
     def test_export_review_json(self):
         _quiet(export_review.main)
         data = json.loads(self.out_json.read_text(encoding="utf-8"))
-        self.assertEqual(len(data), 2, "الاتنين اللي للمراجعة بس")
+        self.assertEqual(len(data), 2, "Only the two flagged for review")
         self.assertEqual({d["field"] for d in data}, {"city", "is_active"})
-        # مرتّب بالثقة تنازليًا (city=0.80 قبل is_active=0.53)
+        # Sorted by confidence descending (city=0.80 before is_active=0.53)
         self.assertEqual([d["field"] for d in data], ["city", "is_active"])
-        self.assertEqual(data[0]["name"], "Dr Test")  # اسم الطبيب اتجاب من providers
+        self.assertEqual(data[0]["name"], "Dr Test")  # the provider name was pulled from providers
 
 
 class SecondSourceSmokeTest(_TempDBTest):
-    """فحص دخان لمرحلة 3: المصدر التاني بيشتغل وبيطلّع صف لكل طبيب."""
+    """Smoke test for stage 3: the second source runs and emits one row per provider."""
 
     def test_make_second_source_runs(self):
         for npi in ("1000000001", "1000000002", "1000000003"):
             self._add_provider(npi)
-        make_second_source.random.seed(7)   # نتيجة قابلة للتكرار
+        make_second_source.random.seed(7)   # reproducible result
         _quiet(make_second_source.main)
         with self._conn() as c:
             rows = c.execute(
                 "SELECT source_name FROM external_data").fetchall()
-        self.assertEqual(len(rows), 3, "صف لكل طبيب")
+        self.assertEqual(len(rows), 3, "One row per provider")
         self.assertTrue(all(r["source_name"] == "clinic_site" for r in rows))
 
 
 class IndependenceScoringTest(_TempDBTest):
     """
-    خطوة 7 (الاستقلالية) في المعادلة الموحّدة (confidence.py): التأكيد بيزيد
-    لما مصادر *مستقلة* تتفق، والمصادر اللي من نفس العائلة مابتتعدّش مرتين.
+    Step 7 (independence) of the unified formula (confidence.py): corroboration
+    increases when *independent* sources agree, and sources from the same family
+    are not counted twice.
 
-    بنختار حقل (specialty) مفيهوش أي من المصادر دي صاحب سلطة، عشان نعزل
-    تأثير الاستقلالية لوحده.
-      • npi1: مصدر واحد (state_board)                          → تأكيد أقل
-      • npi2: مصدرين مستقلين (state_board + practice_site)     → تأكيد أعلى
-      • npi3: مصدر واحد (nppes)                                 → أساس
-      • npi4: مصدرين من نفس العائلة (nppes + nppes_bulk)        → نفس الأساس (مش بيتعدّوا مرتين)
-        (الـ API والـ bulk نفس بيانات NPPES — مش تأكيد مستقل)
+    We pick a field (specialty) for which none of these sources is authoritative,
+    so we can isolate the independence effect on its own.
+      - npi1: a single source (state_board)                       -> lower corroboration
+      - npi2: two independent sources (state_board + practice_site) -> higher corroboration
+      - npi3: a single source (nppes)                              -> baseline
+      - npi4: two sources from the same family (nppes + nppes_bulk) -> same baseline (not counted twice)
+        (the API and the bulk feed are the same NPPES data — not independent corroboration)
     """
 
     def setUp(self):
         super().setUp()
         for npi in ("1000000001", "1000000002", "1000000003", "1000000004"):
             self._add_provider(npi)
-        # npi1: مصدر مستقل واحد
+        # npi1: a single independent source
         self._add_external("1000000001", source_name="state_board",
                            specialty="Internal Medicine")
-        # npi2: مصدرين مستقلين (عائلتين مختلفتين)
+        # npi2: two independent sources (two different families)
         self._add_external("1000000002", source_name="state_board",
                            specialty="Internal Medicine")
         self._add_external("1000000002", source_name="practice_site",
                            specialty="Internal Medicine")
-        # npi3: مصدر واحد
+        # npi3: a single source
         self._add_external("1000000003", source_name="nppes",
                            specialty="Internal Medicine")
-        # npi4: مصدرين من نفس العائلة (NPPES API + NPPES bulk = نفس البيانات)
+        # npi4: two sources from the same family (NPPES API + NPPES bulk = same data)
         self._add_external("1000000004", source_name="nppes",
                            specialty="Internal Medicine")
         self._add_external("1000000004", source_name="nppes_bulk",
@@ -283,33 +285,33 @@ class IndependenceScoringTest(_TempDBTest):
 
     def test_independent_corroboration_raises_confidence(self):
         rows = self._rows()
-        one  = rows["1000000001"]["confidence"]   # state_board فقط
+        one  = rows["1000000001"]["confidence"]   # state_board only
         two  = rows["1000000002"]["confidence"]   # state_board + practice_site
         self.assertGreater(two, one,
-                           "مصدرين مستقلين متفقين لازم يدّوا ثقة أعلى من مصدر واحد")
+                           "Two agreeing independent sources must give higher confidence than a single source")
 
     def test_same_family_sources_do_not_double_count(self):
         rows = self._rows()
-        single = rows["1000000003"]["confidence"]   # nppes فقط
-        family = rows["1000000004"]["confidence"]   # nppes + nppes_bulk (نفس العائلة)
+        single = rows["1000000003"]["confidence"]   # nppes only
+        family = rows["1000000004"]["confidence"]   # nppes + nppes_bulk (same family)
         self.assertAlmostEqual(family, single, places=2,
-                               msg="الـ bulk مش مصدر مستقل عن الـ API فمايزوّدش التأكيد")
+                               msg="The bulk feed is not independent of the API, so it adds no corroboration")
 
     def test_every_change_has_an_explanation(self):
-        # Explainability: كل صف لازم يكون ليه شرح واضح
+        # Explainability: every row must have a clear explanation
         for r in self._rows().values():
             self.assertTrue(r["reason"] and r["reason"].strip())
 
 
 class EmptySourceGuardTest(_TempDBTest):
     """
-    حماية من فقدان البيانات: المصدر التاني الفاضي مايكتبش فوق قيمة سليمة في الأصل،
-    لكن لو الأصل ناقص الحقل ده — المصدر يقدر يملاه (enrichment).
+    Data-loss protection: an empty second source must not overwrite a valid value
+    in the base, but if the base is missing that field — the source may fill it in (enrichment).
     """
 
     def test_empty_source_does_not_overwrite_present_value(self):
         self._add_provider("1000000001")            # phone = (212) 555-1111
-        self._add_external("1000000001", phone="")  # المصدر التاني مفيهوش تليفون
+        self._add_external("1000000001", phone="")  # the second source has no phone
         _quiet(compare.main)
         _quiet(apply_changes.main)
         with self._conn() as c:
@@ -317,17 +319,17 @@ class EmptySourceGuardTest(_TempDBTest):
                 "SELECT COUNT(*) FROM proposed_changes WHERE field='phone'").fetchone()[0]
             phone = c.execute(
                 "SELECT phone FROM providers WHERE npi='1000000001'").fetchone()[0]
-        self.assertEqual(n, 0, "مايتقترحش تغيير لما المصدر فاضي والأصل فيه قيمة")
-        self.assertEqual(phone, "(212) 555-1111", "البيانات السليمة لازم تفضل زي ما هي")
+        self.assertEqual(n, 0, "No change is proposed when the source is empty and the base has a value")
+        self.assertEqual(phone, "(212) 555-1111", "Valid data must stay as it is")
 
     def test_empty_base_can_still_be_filled_from_source(self):
-        self._add_provider("1000000001", phone="")               # الأصل ناقص التليفون
-        self._add_external("1000000001", phone="(212) 555-7777")  # المصدر فيه قيمة
+        self._add_provider("1000000001", phone="")               # the base is missing the phone
+        self._add_external("1000000001", phone="(212) 555-7777")  # the source has a value
         _quiet(compare.main)
         with self._conn() as c:
             row = c.execute(
                 "SELECT new_value FROM proposed_changes WHERE field='phone'").fetchone()
-        self.assertIsNotNone(row, "ملء حقل ناقص في الأصل لازم يتقترح عادي")
+        self.assertIsNotNone(row, "Filling a field missing in the base should be proposed normally")
         self.assertEqual(row[0], "(212) 555-7777")
 
 

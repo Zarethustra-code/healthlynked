@@ -1,15 +1,15 @@
 """
 make_second_source.py
 ---------------------
-بيعمل "مصدر تاني" محاكاة (simulated) في جدول external_data.
+Creates a simulated "second source" in the external_data table.
 
-الفكرة:
-  بياخد بيانات providers الحقيقية، ويعمل منها مصدر تاني (clinic_site) حيث:
-    - معظم القيم زي الأصل (المصدرين متفقين → مفيش تغيير)
-    - نسبة منها مختلفة عمداً (تليفون/عنوان/حالة اتغيّروا)
-  عشان يكون عند محرّك المقارنة حاجة يكتشفها ويقرّر فيها.
+The idea:
+  Takes the real providers data and builds a second source (clinic_site) where:
+    - Most values match the original (both sources agree -> no change)
+    - A portion of them are intentionally different (phone/address/status changed)
+  so that the comparison engine has something to detect and decide on.
 
-كل تغيير بيتعمل عشوائياً بنسبة محدّدة عشان نعرف نقيس بعدين.
+Each change is applied randomly at a fixed rate so we can measure it later.
 """
 
 import sqlite3
@@ -19,12 +19,12 @@ from pathlib import Path
 BASE = Path(__file__).parent
 DB_PATH = BASE / "healthlynked.db"
 
-SOURCE_NAME = "clinic_site"   # اسم المصدر التاني (موقع العيادة)
-random.seed(7)                # نتيجة قابلة للتكرار
+SOURCE_NAME = "clinic_site"   # name of the second source (the clinic website)
+random.seed(7)                # reproducible result
 
 
 def fake_phone():
-    """بيولّد تليفون أمريكي شكله جديد."""
+    """Generates a fresh-looking US phone number."""
     area = random.choice(["212", "646", "718", "917", "516"])
     return f"({area}) {random.randint(200,999)}-{random.randint(1000,9999)}"
 
@@ -33,7 +33,7 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    # نفضّي المصدر التاني القديم (عشان نبدأ نظيف كل مرة)
+    # Clear the old second source (so we start clean each time)
     cur.execute("DELETE FROM external_data WHERE source_name = ?", (SOURCE_NAME,))
 
     rows = cur.execute(
@@ -42,7 +42,7 @@ def main():
     ).fetchall()
 
     if not rows:
-        print("❌ مفيش بيانات في providers. شغّل run_pipeline.py الأول.")
+        print("❌ No data in providers. Run run_pipeline.py first.")
         conn.close()
         return
 
@@ -54,15 +54,15 @@ def main():
     for (npi, phone, street, unit, city, state, zip_, specialty, is_active) in rows:
         roll = random.random()
 
-        # 15% نغيّر التليفون
+        # 15% change the phone
         if roll < 0.15:
             phone = fake_phone()
             changed_phone += 1
-        # 10% نغيّر العنوان (المدينة)
+        # 10% change the address (the city)
         elif roll < 0.25:
             city = random.choice(["Brooklyn", "Queens", "Bronx", "Albany"])
             changed_addr += 1
-        # 3% نغيّر الحالة (متوقف)
+        # 3% change the status (inactive)
         elif roll < 0.28:
             is_active = 0
             changed_active += 1
@@ -81,14 +81,14 @@ def main():
     conn.close()
 
     print("=" * 55)
-    print(f"  المصدر التاني المحاكاة: {SOURCE_NAME}")
+    print(f"  Simulated second source: {SOURCE_NAME}")
     print("=" * 55)
-    print(f"📞 تليفون اتغيّر   : {changed_phone}")
-    print(f"📍 عنوان اتغيّر    : {changed_addr}")
-    print(f"🚫 حالة اتغيّرت    : {changed_active}")
-    print(f"✅ زي الأصل        : {same}")
+    print(f"📞 Phone changed   : {changed_phone}")
+    print(f"📍 Address changed : {changed_addr}")
+    print(f"🚫 Status changed  : {changed_active}")
+    print(f"✅ Same as original: {same}")
     print("-" * 55)
-    print(f"📊 إجمالي المصدر التاني: {total}")
+    print(f"📊 Total second source: {total}")
     print("=" * 55)
 
 
