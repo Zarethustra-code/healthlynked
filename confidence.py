@@ -24,8 +24,9 @@ For a field `f` whose stored value disagrees with one or more external sources
 that all report the *same* new value `v`:
 
   1. Collapse non-independent sources. Sources in the same `independence_group`
-     (e.g. CMS re-publishes NPPES) are NOT independent evidence, so we keep only
-     the single most reliable source per group.
+     (e.g. the NPPES API and its monthly bulk file — the same data via two
+     channels) are NOT independent evidence, so we keep only the single most
+     reliable source per group.
 
   2. Corroboration via noisy-OR over the independent supporters' reliabilities:
 
@@ -71,12 +72,18 @@ from functools import reduce
 # that share an upstream: they do not corroborate each other.
 #   live=False marks the simulated source the prototype ships with.
 SOURCES = {
-    "nppes":         {"reliability": 0.85, "independence_group": "cms",      "live": True},
+    # NPPES (self-reported NPI registry) and the CMS NDF (Medicare-enrollment /
+    # PECOS-derived) are DIFFERENT collection processes -> independent groups, so
+    # when they agree it counts as real corroboration.
+    "nppes":         {"reliability": 0.85, "independence_group": "nppes",    "live": True},
     "cms":           {"reliability": 0.85, "independence_group": "cms",      "live": True},
     "state_board":   {"reliability": 0.90, "independence_group": "state",    "live": True},
     "practice_site": {"reliability": 0.75, "independence_group": "practice", "live": True},
-    # The prototype's simulated second source. Treated as a practice-website
-    # signal so the offline demo exercises the same code path as production.
+    # The NPPES monthly BULK file is the SAME data as the NPPES API via another
+    # channel -> same group as nppes, so the two never count as two confirmations.
+    "nppes_bulk":    {"reliability": 0.85, "independence_group": "nppes",    "live": True},
+    # The prototype's simulated source. Treated as a practice-website signal so
+    # the offline demo exercises the same code path as a production practice feed.
     "clinic_site":   {"reliability": 0.80, "independence_group": "practice", "live": False},
 }
 
