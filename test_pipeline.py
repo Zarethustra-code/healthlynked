@@ -160,10 +160,13 @@ class PipelineIntegrationTest(_TempDBTest):
         self.assertEqual(ch["1000000001"]["decision"], "AUTO_UPDATE")
         self.assertEqual(ch["1000000002"]["decision"], "NEEDS_REVIEW")
         self.assertEqual(ch["1000000003"]["decision"], "NEEDS_REVIEW")
-        # أرقام الثقة المتوقّعة من معادلة compare.py
-        self.assertAlmostEqual(ch["1000000001"]["confidence"], 0.89, places=2)
-        self.assertAlmostEqual(ch["1000000002"]["confidence"], 0.80, places=2)
-        self.assertAlmostEqual(ch["1000000003"]["confidence"], 0.53, places=2)
+        # أرقام الثقة المتوقّعة من المعادلة الموحّدة في confidence.py:
+        #   phone (clinic=practice → صاحب سلطة): 0.80 + 0.15*(1-0.80) = 0.83 ≥ bar 0.83 → AUTO
+        #   city  (صاحب سلطة كمان): 0.83 < bar 0.86 → REVIEW
+        #   is_active 1→0: 0.80، وقاعدة أمان صارمة (إلغاء تفعيل) → REVIEW دايمًا
+        self.assertAlmostEqual(ch["1000000001"]["confidence"], 0.83, places=2)
+        self.assertAlmostEqual(ch["1000000002"]["confidence"], 0.83, places=2)
+        self.assertAlmostEqual(ch["1000000003"]["confidence"], 0.80, places=2)
 
     def test_every_change_has_a_reason(self):
         # Explainability: مفيش قرار من غير شرح
@@ -239,41 +242,62 @@ class SecondSourceSmokeTest(_TempDBTest):
 
 class IndependenceScoringTest(_TempDBTest):
     """
-    خطوة 7 (الاستقلالية) لازم تأثّر في الثقة فعلاً — مش مجرد دالة مش متنادى عليها.
-    نفس التغيير بالظبط من مصدرين مختلفين:
-      • clinic_site  → مستقل عن nppes      → بدون خصم
-      • cms          → مش مستقل (بياخد من nppes) → خصم INDEPENDENCE_PENALTY
-    بنختار حقل (specialty) مفيش فيه أيٌّ من المصدرين صاحب سلطة، عشان الفرق
-    الوحيد بين الحالتين يكون الاستقلالية بس.
+    خطوة 7 (الاستقلالية) في المعادلة الموحّدة (confidence.py): التأكيد بيزيد
+    لما مصادر *مستقلة* تتفق، والمصادر اللي من نفس العائلة مابتتعدّش مرتين.
+
+    بنختار حقل (specialty) مفيهوش أي من المصادر دي صاحب سلطة، عشان نعزل
+    تأثير الاستقلالية لوحده.
+      • npi1: مصدر واحد (state_board)                       → تأكيد أقل
+      • npi2: مصدرين مستقلين (state_board + practice_site)  → تأكيد أعلى
+      • npi3: مصدر واحد (nppes)                              → أساس
+      • npi4: مصدرين من نفس العائلة (nppes + cms)            → نفس الأساس (مش بيتعدّوا مرتين)
     """
 
     def setUp(self):
         super().setUp()
-        self._add_provider("1000000001")
-        self._add_provider("1000000002")
-        self._add_external("1000000001", source_name="clinic_site",
+        for npi in ("1000000001", "1000000002", "1000000003", "1000000004"):
+            self._add_provider(npi)
+        # npi1: مصدر مستقل واحد
+        self._add_external("1000000001", source_name="state_board",
                            specialty="Internal Medicine")
-        self._add_external("1000000002", source_name="cms",
+        # npi2: مصدرين مستقلين (عائلتين مختلفتين)
+        self._add_external("1000000002", source_name="state_board",
+                           specialty="Internal Medicine")
+        self._add_external("1000000002", source_name="practice_site",
+                           specialty="Internal Medicine")
+        # npi3: مصدر واحد
+        self._add_external("1000000003", source_name="nppes",
+                           specialty="Internal Medicine")
+        # npi4: مصدرين من نفس العائلة (cms بياخد من nppes)
+        self._add_external("1000000004", source_name="nppes",
+                           specialty="Internal Medicine")
+        self._add_external("1000000004", source_name="cms",
                            specialty="Internal Medicine")
         _quiet(compare.main)
 
-    def _conf_and_reason(self):
+    def _rows(self):
         with self._conn() as c:
-            rows = {r["npi"]: r for r in c.execute(
+            return {r["npi"]: r for r in c.execute(
                 "SELECT * FROM proposed_changes").fetchall()}
-        return rows
 
-    def test_non_independent_source_is_penalized(self):
-        rows = self._conf_and_reason()
-        indep = rows["1000000001"]["confidence"]   # clinic_site
-        dep   = rows["1000000002"]["confidence"]   # cms
-        self.assertAlmostEqual(dep, indep - compare.INDEPENDENCE_PENALTY, places=2,
-                               msg="المصدر المش مستقل لازم يتخصم منه بالظبط")
+    def test_independent_corroboration_raises_confidence(self):
+        rows = self._rows()
+        one  = rows["1000000001"]["confidence"]   # state_board فقط
+        two  = rows["1000000002"]["confidence"]   # state_board + practice_site
+        self.assertGreater(two, one,
+                           "مصدرين مستقلين متفقين لازم يدّوا ثقة أعلى من مصدر واحد")
 
-    def test_independence_shows_in_explanation(self):
-        rows = self._conf_and_reason()
-        self.assertIn("مستقل", rows["1000000001"]["reason"])
-        self.assertIn("مش مستقل", rows["1000000002"]["reason"])
+    def test_same_family_sources_do_not_double_count(self):
+        rows = self._rows()
+        single = rows["1000000003"]["confidence"]   # nppes فقط
+        family = rows["1000000004"]["confidence"]   # nppes + cms (نفس العائلة)
+        self.assertAlmostEqual(family, single, places=2,
+                               msg="cms مش مصدر مستقل عن nppes فمايزوّدش التأكيد")
+
+    def test_every_change_has_an_explanation(self):
+        # Explainability: كل صف لازم يكون ليه شرح واضح
+        for r in self._rows().values():
+            self.assertTrue(r["reason"] and r["reason"].strip())
 
 
 class EmptySourceGuardTest(_TempDBTest):

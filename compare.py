@@ -1,185 +1,49 @@
 """
 compare.py
 ----------
-محرّك المقارنة وكشف التغييرات (خطوات 6 + 7 + 8 من خريطة النظام).
+Batch comparison / change-detection engine (steps 6-8 of the pipeline).
 
-  خطوة 6 (مطابقة):    يقارن كل عمود بين المصدرين باستخدام نسخة compare.
-  خطوة 7 (استقلالية): يتأكد المصدرين مستقلين (مش واحد ناقل من التاني).
-  خطوة 8 (قرار):      يحسب الثقة + يقرّر AUTO_UPDATE / NEEDS_REVIEW.
+  Step 6 (match):        compare each column between HealthLynked and every
+                         external source, using the shared normalizer.
+  Step 7 (independence): corroboration only counts independent sources.
+  Step 8 (decide):       score confidence + choose AUTO_UPDATE / NEEDS_REVIEW.
 
-المخرجات بتتكتب في جدول proposed_changes.
+All of the scoring, source-reliability, authority, independence, sensitivity
+and safety logic now lives in ONE place -- confidence.py -- which is also used
+by live_verify.py. This module just feeds it data from the database and writes
+the results to the proposed_changes table.
 
-ملاحظة: أرقام الثقة (placeholders) مبدئية، وبتتعاير من البيانات بعدين.
+Output rows: (npi, field, old_value, new_value, source, confidence, decision,
+reason) where decision is 'AUTO_UPDATE' or 'NEEDS_REVIEW' (the tokens
+apply_changes.py and the DB CHECK constraint expect).
 """
 
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 
-from normalize import normalize_phone, normalize_address, normalize_specialty
+import confidence
+from normalize import field_compare_form, field_display_form
 
 BASE = Path(__file__).parent
 DB_PATH = BASE / "healthlynked.db"
 
-
-# ===========================================================================
-#  جداول المعرفة (قواعد قابلة للتعديل)
-# ===========================================================================
-
-# (1) سلطة كل حقل: مين المصدر "الأصل" (المتخصّص) لكل عمود.
-#     لو المصدر اللي جه بالتغيير هو نفسه الأصل → ثقة أعلى.
-FIELD_AUTHORITY = {
-    "phone":     "clinic_site",   # موقع العيادة أحدث في التليفون
-    "street":    "clinic_site",
-    "city":      "clinic_site",
-    "state":     "clinic_site",
-    "zip":       "clinic_site",
-    "specialty": "nppes",         # NPPES الرسمي في التخصص
-    "is_active": "nppes",         # NPPES الرسمي في الحالة
-}
-
-# (2) استقلالية المصادر: مين مستقل عن مين.
-#     لو المصدرين مش مستقلين، التطابق مش تأكيد حقيقي.
-INDEPENDENT_PAIRS = {
-    frozenset({"nppes", "clinic_site"}): True,
-    frozenset({"nppes", "cms"}): False,   # CMS بياخد من NPPES (مش مستقل)
-}
-
-# (3) حساسية الحقل: بتحدّد القرار (آمن للتحديث التلقائي ولا لأ).
-#     قيمة أعلى = أكثر حساسية = أقرب لمراجعة بشرية.
-FIELD_SENSITIVITY = {
-    "phone":     0.2,   # منخفضة → آمن
-    "street":    0.5,
-    "city":      0.5,
-    "state":     0.5,
-    "zip":       0.4,
-    "specialty": 0.8,   # عالية
-    "is_active": 0.9,   # خطيرة
-}
-
-# ثوابت مبدئية (placeholders) — بتتعاير من البيانات بعدين
-SOURCE_BASE_CONF     = 0.80   # ثقة المصدر الأساسية
-AUTHORITY_BONUS      = 0.15   # بوست لو المصدر هو صاحب السلطة على الحقل
-INDEPENDENCE_PENALTY = 0.20   # خصم لو المصدر مش مستقل عن مصدر الأصل
-AUTO_THRESHOLD       = 0.85   # فوقها → تحديث تلقائي
-
-# مصدر جدول providers الأصلي — البيانات اتجمّعت من NPPES في fetch_data.
-# بنقيس استقلالية أي مصدر جديد بالنسبة للمصدر ده.
-BASE_SOURCE = "nppes"
-
-
-# ===========================================================================
-#  خطوة 6: مطابقة حقل واحد
-# ===========================================================================
-
-def _is_empty(val):
-    """
-    فاضي = None أو نص فراغات بس.
-    ملاحظة مهمة: الرقم 0 (زي is_active=0) مش فاضي — دي قيمة حقيقية.
-    """
-    return val is None or str(val).strip() == ""
-
-
-def _compare_value(field, old_val, new_val):
-    """
-    بترجّع True لو القيمتين متطابقتين (بعد التطبيع)، False لو مختلفتين.
-    بتستخدم نسخة compare المناسبة لكل نوع حقل.
-    """
-    if field == "phone":
-        return normalize_phone(old_val)["compare"] == normalize_phone(new_val)["compare"]
-
-    if field in ("street", "city", "state", "zip"):
-        # نقارن الجزء ده لوحده (نطبّعه كعنوان جزئي)
-        a = normalize_address(old_val, "", "", "")["compare"].split("|")[0] if field == "street" else str(old_val or "").strip().lower()
-        b = normalize_address(new_val, "", "", "")["compare"].split("|")[0] if field == "street" else str(new_val or "").strip().lower()
-        return a == b
-
-    if field == "specialty":
-        return normalize_specialty("", old_val)["compare"] == normalize_specialty("", new_val)["compare"]
-
-    # is_active وأي حقل تاني: مقارنة مباشرة
-    return str(old_val).strip() == str(new_val).strip()
-
-
-# ===========================================================================
-#  خطوة 7: استقلالية المصدرين
-# ===========================================================================
-
-def _are_independent(source_a, source_b):
-    """بترجّع True لو المصدرين مستقلين (التطابق بينهم تأكيد حقيقي)."""
-    pair = frozenset({source_a, source_b})
-    return INDEPENDENT_PAIRS.get(pair, True)   # الافتراضي مستقلين
-
-
-# ===========================================================================
-#  خطوة 8: حساب الثقة + القرار
-# ===========================================================================
-
-def _score_and_decide(field, source):
-    """
-    بتحسب ثقة التغيير وتقرّر AUTO_UPDATE ولا NEEDS_REVIEW.
-    بترجّع (confidence, decision, reason).
-    reason = شرح بلغة بشري ليه اتأخد القرار ده (Explainability).
-    """
-    conf = SOURCE_BASE_CONF
-    reason_parts = []
-
-    # بوست لو المصدر هو صاحب السلطة على الحقل ده
-    is_authority = FIELD_AUTHORITY.get(field) == source
-    if is_authority:
-        conf += AUTHORITY_BONUS
-        reason_parts.append(f"المصدر ({source}) صاحب سلطة على «{field}»")
-    else:
-        reason_parts.append(f"المصدر ({source}) مش صاحب سلطة على «{field}»")
-
-    # خطوة 7: استقلالية المصدر عن مصدر الأصل (BASE_SOURCE).
-    #   مصدر مستقل بيختلف معانا  = دليل حقيقي → نحترمه.
-    #   مصدر مش مستقل (بياخد من نفس منبعنا) = الاختلاف غالبًا نسخة قديمة
-    #   مش تغيير حقيقي → نقلّل الثقة ونقرّبه لمراجعة بشرية.
-    if _are_independent(BASE_SOURCE, source):
-        reason_parts.append(f"المصدر ({source}) مستقل عن الأصل ({BASE_SOURCE}) → تأكيد أقوى")
-    else:
-        conf -= INDEPENDENCE_PENALTY
-        reason_parts.append(f"المصدر ({source}) مش مستقل عن الأصل ({BASE_SOURCE}) → ثقة أقل")
-
-    # تأثير حساسية الحقل
-    sensitivity = FIELD_SENSITIVITY.get(field, 0.5)
-    conf -= sensitivity * 0.3
-    if sensitivity >= 0.8:
-        reason_parts.append("الحقل حسّاس جداً (خطر على المريض)")
-    elif sensitivity >= 0.5:
-        reason_parts.append("الحقل متوسط الحساسية (ممكن انتقال/تغيير مهم)")
-    else:
-        reason_parts.append("الحقل منخفض الحساسية (آمن نسبياً)")
-
-    conf = max(0.0, min(1.0, conf))
-    decision = "AUTO_UPDATE" if conf >= AUTO_THRESHOLD else "NEEDS_REVIEW"
-
-    # نكمّل الشرح بالنتيجة
-    if decision == "AUTO_UPDATE":
-        reason_parts.append(f"الثقة {conf:.0%} ≥ العتبة → تحديث تلقائي")
-    else:
-        reason_parts.append(f"الثقة {conf:.0%} < العتبة → مراجعة بشرية")
-
-    reason = " | ".join(reason_parts)
-    return round(conf, 3), decision, reason
-
-
-# ===========================================================================
-#  المحرّك الرئيسي
-# ===========================================================================
-
-# الأعمدة اللي بنقارنها
+# Columns we compare between sources.
 COMPARE_FIELDS = ["phone", "street", "city", "state", "zip", "specialty", "is_active"]
+
+# Map confidence.py's verdicts onto the legacy DB tokens.
+_DECISION = {"auto_update": "AUTO_UPDATE", "human_review": "NEEDS_REVIEW",
+             "no_change": "NEEDS_REVIEW"}
 
 
 def main():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    # نفضّي التغييرات القديمة عشان نبدأ نظيف
+    # Start clean.
     cur.execute("DELETE FROM proposed_changes")
 
-    # نجيب الأصل (providers) كـ dict بالـ npi
+    # Load HealthLynked records (the source of truth) keyed by NPI.
     providers = {}
     for row in cur.execute(
         "SELECT npi, phone, street, city, state, zip, specialty, is_active FROM providers"
@@ -187,52 +51,53 @@ def main():
         providers[row[0]] = dict(zip(
             ["npi", "phone", "street", "city", "state", "zip", "specialty", "is_active"], row))
 
-    # نجيب المصدر التاني
-    externals = cur.execute(
+    # Load every external record, grouped by NPI (supports many sources per provider).
+    ext_by_npi = defaultdict(list)
+    for row in cur.execute(
         "SELECT npi, source_name, phone, street, city, state, zip, specialty, is_active "
         "FROM external_data"
-    ).fetchall()
+    ):
+        npi = row[0]
+        ext_by_npi[npi].append(dict(zip(
+            ["npi", "source_name", "phone", "street", "city", "state", "zip",
+             "specialty", "is_active"], row)))
 
-    changes = 0
-    auto = 0
-    review = 0
-    skipped_empty = 0
+    changes = auto = review = 0
 
-    for ext in externals:
-        (npi, source, phone, street, city, state, zip_, specialty, is_active) = ext
-        old = providers.get(npi)
-        if not old:
-            continue   # المصدر التاني فيه طبيب مش عندنا (نتجاهله دلوقتي)
-
-        new_values = {
-            "phone": phone, "street": street, "city": city, "state": state,
-            "zip": zip_, "specialty": specialty, "is_active": is_active,
-        }
+    for npi, old in providers.items():
+        sources = ext_by_npi.get(npi)
+        if not sources:
+            continue   # no external data for this provider
 
         for field in COMPARE_FIELDS:
             old_val = old[field]
-            new_val = new_values[field]
 
-            # خطوة 6: هل اتغيّر؟
-            if _compare_value(field, old_val, new_val):
-                continue   # متطابق → مفيش تغيير
+            # Build the candidate list across all sources that carry this field.
+            candidates = []
+            for src in sources:
+                raw = src[field]
+                if raw is None or str(raw).strip() == "":
+                    continue
+                candidates.append({
+                    "source": src["source_name"],
+                    "value": field_compare_form(field, raw),
+                    "display": field_display_form(field, raw),
+                })
 
-            # حماية من فقدان البيانات: المصدر التاني قيمته فاضية والأصل فيه قيمة.
-            # ده غالبًا «المصدر مابيحملش الحقل ده» مش «القيمة اتغيّرت لفاضي»،
-            # فممنوع نقترح نكتب فاضي فوق بيانات سليمة (خصوصًا تحديث تلقائي).
-            # العكس — ملء حقل ناقص في الأصل من المصدر — مسموح وبيعدّي عادي.
-            if _is_empty(new_val) and not _is_empty(old_val):
-                skipped_empty += 1
-                continue
+            result = confidence.score_field(
+                field, old_val, candidates,
+                old_compare=field_compare_form(field, old_val))
+            if not result:
+                continue   # no real, safe change to propose
 
-            # خطوة 7 (الاستقلالية) + خطوة 8 (الثقة + القرار + الشرح)
-            conf, decision, reason = _score_and_decide(field, source)
-
+            decision = _DECISION[result["decision"]]
             cur.execute(
                 "INSERT INTO proposed_changes "
                 "(npi, field, old_value, new_value, source, confidence, decision, reason) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (npi, field, str(old_val), str(new_val), source, conf, decision, reason),
+                (npi, field, str(old_val), str(result["new_value"]),
+                 ", ".join(result["supporting_sources"]),
+                 result["confidence"], decision, result["reason"]),
             )
             changes += 1
             if decision == "AUTO_UPDATE":
@@ -244,13 +109,11 @@ def main():
     conn.close()
 
     print("=" * 55)
-    print("  محرّك المقارنة وكشف التغييرات")
+    print("  Change-detection engine (confidence.py)")
     print("=" * 55)
-    print(f"🔍 إجمالي التغييرات المكتشفة : {changes}")
-    print(f"🟢 تحديث تلقائي (AUTO)        : {auto}")
-    print(f"🟠 مراجعة بشرية (REVIEW)      : {review}")
-    if skipped_empty:
-        print(f"🛡️  اتجاهلوا (مصدر فاضي)      : {skipped_empty}")
+    print(f"🔍 changes detected   : {changes}")
+    print(f"🟢 auto-update        : {auto}")
+    print(f"🟠 needs human review : {review}")
     print("=" * 55)
 
 
