@@ -1,19 +1,19 @@
 """
 make_dirty_data.py
 ------------------
-بياخد الـ 1000 طبيب الحقيقي من healthlynked.db، وبيعمل منهم نسخة "مبوّظة"
-لاختبار النظام.
+Takes the real 1000 providers from healthlynked.db and creates a "dirtied"
+copy of them to test the system.
 
-الفكرة:
-  ~30% أغلاط حقيقية   → المفروض النظام يرفضهم   (expected_valid = False)
-  ~70% سليمين/فوضى    → المفروض النظام يقبلهم   (expected_valid = True)
-                         (الفوضى الشكلية بتتنضّف وتعدّي، مش بتترفض)
+The idea:
+  ~30% real errors    → the system should reject them   (expected_valid = False)
+  ~70% valid/messy    → the system should accept them    (expected_valid = True)
+                         (cosmetic noise gets cleaned and passes, not rejected)
 
-كل صف بيتكتب معاه:
-  - error_type      : نوع التبويظ اللي عملناه (عشان نراجع)
-  - expected_valid  : المفروض النظام يقبله (True) ولا يرفضه (False)
+Each row is written with:
+  - error_type      : the type of dirtying we applied (for review)
+  - expected_valid  : whether the system should accept it (True) or reject it (False)
 
-النتيجة بتتكتب في dirty_providers.csv
+The result is written to dirty_providers.csv
 """
 
 import sqlite3
@@ -25,76 +25,76 @@ BASE = Path(__file__).parent
 DB_PATH = BASE / "healthlynked.db"
 OUT_PATH = BASE / "dirty_providers.csv"
 
-random.seed(42)   # عشان النتيجة تطلع نفسها كل مرة (قابلة للتكرار)
+random.seed(42)   # so the result comes out the same every time (reproducible)
 
 
 # ===========================================================================
-#  دوال تبويظ الـ NPI  (كلها أغلاط حقيقية → expected_valid = False)
+#  NPI dirtying functions  (all are real errors → expected_valid = False)
 # ===========================================================================
 
 def npi_luhn_fail(npi):
-    """يغيّر آخر رقم عشان الـ check digit يبقى غلط."""
+    """Changes the last digit so the check digit becomes wrong."""
     last = int(npi[-1])
     wrong = (last + 1) % 10
     return npi[:-1] + str(wrong)
 
 def npi_too_short(npi):
-    """يشيل أول رقم (زي ما الصفر بيقع في إكسيل)."""
+    """Drops the first digit (like a leading zero lost in Excel)."""
     return npi[1:]
 
 def npi_too_long(npi):
-    """يضيف رقم زيادة في الآخر."""
+    """Adds an extra digit at the end."""
     return npi + "3"
 
 def npi_symbols(npi):
-    """يحط شرط وأقواس وسط الرقم."""
+    """Inserts a dash and parentheses in the middle of the number."""
     return f"{npi[:3]}-{npi[3:6]}({npi[6:9]}){npi[9]}"
 
 def npi_letters(npi):
-    """يبدّل 3 أرقام بحروف."""
+    """Replaces 3 digits with letters."""
     return npi[:5] + "ABC" + npi[8:]
 
 def npi_bad_prefix(npi):
-    """يخلّي أول رقم 3 (الأطباء لازم يبدؤوا بـ 1 أو 2)."""
+    """Makes the first digit 3 (providers must start with 1 or 2)."""
     return "3" + npi[1:]
 
 def npi_null(npi):
-    """يشيل الـ NPI تماماً."""
+    """Removes the NPI entirely."""
     return ""
 
 
 # ===========================================================================
-#  دوال تبويظ الاسم
+#  Name dirtying functions
 # ===========================================================================
 
-# --- أغلاط حقيقية في الاسم → expected_valid = False ---
+# --- real name errors → expected_valid = False ---
 def name_empty(name):
-    """اسم فاضي تماماً."""
+    """Completely empty name."""
     return ""
 
 def name_single_letter(name):
-    """اسم حرف واحد (مش طبيب حقيقي)."""
+    """Single-letter name (not a real provider)."""
     return random.choice(["J.", "Doc J", "X"])
 
-# --- فوضى شكلية (سليمة، بتتنضّف) → expected_valid = True ---
+# --- cosmetic noise (valid, gets cleaned) → expected_valid = True ---
 def name_titles(name):
-    """يحيط الاسم بألقاب علمية."""
+    """Surrounds the name with academic titles."""
     return f"Dr. {name}, MD, PhD, FACS"
 
 def name_messy_spaces(name):
-    """مسافات مزدوجة ونقط عشوائية."""
+    """Double spaces and random dots."""
     parts = name.split()
     return "  ".join(parts) + " ..."
 
 def name_reversed(name):
-    """يقلب الاسم (العائلة الأول) بفاصلة."""
+    """Reverses the name (last name first) with a comma."""
     parts = name.split()
     if len(parts) >= 2:
         return f"{parts[-1]}, {parts[0]}"
     return name
 
 def name_muddled_case(name):
-    """حروف كبيرة وصغيرة متداخلة."""
+    """Mixed upper and lower case letters."""
     return "".join(
         c.upper() if random.random() > 0.5 else c.lower()
         for c in name
@@ -102,10 +102,10 @@ def name_muddled_case(name):
 
 
 # ===========================================================================
-#  التصنيفات
+#  Categories
 # ===========================================================================
 
-# أغلاط حقيقية (المفروض تترفض)
+# real errors (should be rejected)
 REAL_ERRORS = [
     ("npi_luhn_fail",   npi_luhn_fail,   "npi"),
     ("npi_too_short",   npi_too_short,   "npi"),
@@ -118,7 +118,7 @@ REAL_ERRORS = [
     ("name_single",     name_single_letter, "name"),
 ]
 
-# فوضى شكلية (المفروض تعدّي بعد التنظيف)
+# cosmetic noise (should pass after cleaning)
 COSMETIC_NOISE = [
     ("name_titles",       name_titles,       "name"),
     ("name_messy_spaces", name_messy_spaces, "name"),
@@ -133,7 +133,7 @@ def main():
     conn.close()
 
     if not rows:
-        print("❌ مفيش بيانات في قاعدة البيانات. شغّل fetch_data.py الأول.")
+        print("❌ No data in the database. Run fetch_data.py first.")
         return
 
     out = open(OUT_PATH, "w", newline="", encoding="utf-8")
@@ -148,7 +148,7 @@ def main():
         roll = random.random()
 
         if roll < 0.30:
-            # 30% غلط حقيقي
+            # 30% real error
             err_name, err_func, field = random.choice(REAL_ERRORS)
             if field == "npi":
                 npi = err_func(npi)
@@ -158,14 +158,14 @@ def main():
             count_real += 1
 
         elif roll < 0.55:
-            # 25% فوضى شكلية (سليمة)
+            # 25% cosmetic noise (valid)
             err_name, err_func, field = random.choice(COSMETIC_NOISE)
             name = err_func(name)
             writer.writerow([npi, name, err_name, True])
             count_cosmetic += 1
 
         else:
-            # 45% نضيف تماماً
+            # 45% completely clean
             writer.writerow([npi, name, "clean", True])
             count_clean += 1
 
@@ -173,16 +173,16 @@ def main():
 
     total = count_real + count_cosmetic + count_clean
     print("=" * 55)
-    print("  توليد البيانات المبوّظة")
+    print("  Generating dirty data")
     print("=" * 55)
-    print(f"❌ أغلاط حقيقية (تترفض)   : {count_real}")
-    print(f"🧹 فوضى شكلية (تتنضّف)    : {count_cosmetic}")
-    print(f"✅ نضيفين تماماً          : {count_clean}")
+    print(f"❌ Real errors (rejected)   : {count_real}")
+    print(f"🧹 Cosmetic noise (cleaned) : {count_cosmetic}")
+    print(f"✅ Completely clean         : {count_clean}")
     print("-" * 55)
-    print(f"📊 الإجمالي               : {total}")
-    print(f"📈 المتوقع يعدّي           : {count_cosmetic + count_clean}")
-    print(f"📉 المتوقع يترفض          : {count_real}")
-    print(f"📄 الملف                  : {OUT_PATH}")
+    print(f"📊 Total                    : {total}")
+    print(f"📈 Expected to pass         : {count_cosmetic + count_clean}")
+    print(f"📉 Expected to be rejected  : {count_real}")
+    print(f"📄 File                     : {OUT_PATH}")
     print("=" * 55)
 
 

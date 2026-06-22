@@ -1,16 +1,16 @@
 """
 evaluate.py
 -----------
-بيقيس دقة النظام على البيانات المبوّظة.
+Measures the system's accuracy on the corrupted data.
 
-الفكرة:
-  1. يقرا dirty_providers.csv (فيها expected_valid = الحقيقة المعروفة).
-  2. لكل صف، النظام يقرّر: سليم ولا غلط؟
-        - الـ NPI لازم يجتاز is_valid_npi()
-        - الاسم بعد التنظيف لازم يكون حرفين على الأقل
-  3. يقارن قرار النظام بالحقيقة → يبني Confusion Matrix.
-  4. يحسب Precision / Recall / Accuracy.
-  5. يطلّع تفصيل لكل نوع غلط + يحفظ الأخطاء في ملف للمراجعة.
+The idea:
+  1. Read dirty_providers.csv (which contains expected_valid = the known ground truth).
+  2. For each row, the system decides: valid or invalid?
+        - The NPI must pass is_valid_npi()
+        - The name after cleaning must be at least two characters
+  3. Compare the system's decision against the ground truth → build a Confusion Matrix.
+  4. Compute Precision / Recall / Accuracy.
+  5. Output a breakdown for each error type + save the errors to a file for review.
 """
 
 import csv
@@ -24,18 +24,18 @@ BASE = Path(__file__).parent
 IN_PATH = BASE / "dirty_providers.csv"
 ERRORS_PATH = BASE / "misclassified.csv"
 
-MIN_NAME_LEN = 2   # الاسم لازم يكون حرفين على الأقل (بعد التنظيف)
+MIN_NAME_LEN = 2   # the name must be at least two characters (after cleaning)
 
 
 def decide(npi, name):
     """
-    قرار النظام: هل السجل ده سليم (True) ولا غلط (False)؟
+    The system's decision: is this record valid (True) or invalid (False)?
     """
-    # بوابة 1: الـ NPI
+    # Gate 1: the NPI
     if not is_valid_npi(npi):
         return False
 
-    # بوابة 2: الاسم — حرفين على الأقل بعد التنظيف
+    # Gate 2: the name — at least two characters after cleaning
     clean = normalize_name(name)
     if len(clean["compare"].replace(" ", "")) < MIN_NAME_LEN:
         return False
@@ -47,32 +47,32 @@ def main():
     with open(IN_PATH, encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
-    # الـ 4 خانات
+    # the 4 cells
     TP = TN = FP = FN = 0
 
-    # تفصيل لكل نوع غلط: كام اتمسك صح
+    # breakdown per error type: how many were caught correctly
     by_type = defaultdict(lambda: {"correct": 0, "wrong": 0})
 
-    # نحفظ الصفوف اللي النظام غلط فيها للمراجعة
+    # save the rows the system got wrong for review
     misclassified = []
 
     for r in rows:
         npi = r["npi"]
         name = r["name"]
-        expected = (r["expected_valid"] == "True")   # الحقيقة
-        predicted = decide(npi, name)                 # قرار النظام
+        expected = (r["expected_valid"] == "True")   # the ground truth
+        predicted = decide(npi, name)                 # the system's decision
 
-        # تصنيف الخانة
+        # classify the cell
         if expected and predicted:
             TP += 1
         elif not expected and not predicted:
             TN += 1
         elif not expected and predicted:
-            FP += 1   # خطر: قبل معطوب
+            FP += 1   # danger: accepted a corrupted record
         else:  # expected and not predicted
-            FN += 1   # رفض سليم بريء
+            FN += 1   # rejected an innocent valid record
 
-        # تتبّع حسب نوع الغلط
+        # track by error type
         etype = r["error_type"]
         if expected == predicted:
             by_type[etype]["correct"] += 1
@@ -85,50 +85,50 @@ def main():
 
     total = TP + TN + FP + FN
 
-    # المقاييس (مع حماية من القسمة على صفر)
+    # the metrics (with protection against division by zero)
     precision = TP / (TP + FP) if (TP + FP) else 0
     recall    = TP / (TP + FN) if (TP + FN) else 0
     accuracy  = (TP + TN) / total if total else 0
     f1 = (2 * precision * recall / (precision + recall)
           if (precision + recall) else 0)
 
-    # ---------------- الطباعة ----------------
+    # ---------------- printing ----------------
     print("=" * 60)
-    print("  تقييم النظام على البيانات المبوّظة")
+    print("  System evaluation on the corrupted data")
     print("=" * 60)
-    print(f"إجمالي الصفوف: {total}\n")
+    print(f"Total rows: {total}\n")
 
     print("Confusion Matrix:")
-    print(f"  ✅ TP (سليم → قُبِل)   : {TP}")
-    print(f"  ✅ TN (غلط  → رُفِض)   : {TN}")
-    print(f"  😱 FP (غلط  → قُبِل!)  : {FP}   ← بيانات معطوبة دخلت")
-    print(f"  😞 FN (سليم → رُفِض!)  : {FN}   ← أطباء سليمين اترفضوا")
+    print(f"  ✅ TP (valid   → accepted) : {TP}")
+    print(f"  ✅ TN (invalid → rejected) : {TN}")
+    print(f"  😱 FP (invalid → accepted!): {FP}   ← corrupted data got through")
+    print(f"  😞 FN (valid   → rejected!): {FN}   ← valid providers were rejected")
     print("-" * 60)
 
-    print("المقاييس:")
-    print(f"  Precision : {precision:.1%}   (اللي قبلته، قد إيه منه سليم فعلاً)")
-    print(f"  Recall    : {recall:.1%}   (السليمين، مسكت منهم كام)")
-    print(f"  Accuracy  : {accuracy:.1%}   (نسبة القرارات الصح إجمالاً)")
-    print(f"  F1 Score  : {f1:.1%}   (توازن Precision و Recall)")
+    print("Metrics:")
+    print(f"  Precision : {precision:.1%}   (of what was accepted, how much is actually valid)")
+    print(f"  Recall    : {recall:.1%}   (of the valid ones, how many were caught)")
+    print(f"  Accuracy  : {accuracy:.1%}   (proportion of correct decisions overall)")
+    print(f"  F1 Score  : {f1:.1%}   (balance of Precision and Recall)")
     print("-" * 60)
 
-    print("التفصيل حسب نوع الغلط:")
+    print("Breakdown by error type:")
     for etype in sorted(by_type):
         c = by_type[etype]["correct"]
         w = by_type[etype]["wrong"]
-        flag = "" if w == 0 else f"   ⚠️ {w} غلط"
-        print(f"  {etype:<20} صح: {c:>3} | غلط: {w:>3}{flag}")
+        flag = "" if w == 0 else f"   ⚠️ {w} wrong"
+        print(f"  {etype:<20} correct: {c:>3} | wrong: {w:>3}{flag}")
     print("=" * 60)
 
-    # نحفظ الأخطاء لو فيه
+    # save the errors if any
     if misclassified:
         with open(ERRORS_PATH, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=misclassified[0].keys())
             writer.writeheader()
             writer.writerows(misclassified)
-        print(f"📄 الصفوف اللي النظام غلط فيها اتحفظت في: {ERRORS_PATH}")
+        print(f"📄 The rows the system got wrong were saved to: {ERRORS_PATH}")
     else:
-        print("🎉 النظام مسك كل حاجة صح — مفيش أخطاء!")
+        print("🎉 The system caught everything correctly — no errors!")
     print("=" * 60)
 
 

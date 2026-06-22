@@ -1,9 +1,9 @@
 """
 test_validation.py
 ------------------
-اختبارات وحدة لـ validation.py — التحقق من الـ NPI (طول + بادئة + Luhn).
+Unit tests for validation.py — NPI validation (length + prefix + Luhn).
 
-التشغيل:
+Run:
     python3 test_validation.py
     python3 -m unittest -v
 """
@@ -14,14 +14,14 @@ from validation import is_valid_npi, _luhn_check_digit
 
 
 def _make_valid_npi(nine):
-    """بيكمّل 9 أرقام بالـ check digit الصح عشان نطلّع NPI سليم."""
+    """Completes 9 digits with the correct check digit to produce a valid NPI."""
     return nine + str(_luhn_check_digit(nine))
 
 
 class LuhnCheckDigitTest(unittest.TestCase):
 
     def test_known_cms_example(self):
-        # 1234567893 هو مثال CMS الرسمي → الـ check digit لأول 9 = 3
+        # 1234567893 is the official CMS example → the check digit for the first 9 = 3
         self.assertEqual(_luhn_check_digit("123456789"), 3)
 
     def test_always_single_digit(self):
@@ -41,9 +41,9 @@ class IsValidNpiTest(unittest.TestCase):
         self.assertFalse(is_valid_npi("1234567890"))
 
     def test_bad_prefix_even_if_luhn_ok(self):
-        # نبني رقم Luhn سليم بس بيبدأ بـ 3 → لازم يترفض على البادئة
+        # Build a valid Luhn number that starts with 3 → it must be rejected on the prefix
         npi = _make_valid_npi("345678901")
-        self.assertEqual(_luhn_check_digit("345678901"), int(npi[9]))  # تأكيد إنه Luhn-سليم
+        self.assertEqual(_luhn_check_digit("345678901"), int(npi[9]))  # confirm it is Luhn-valid
         self.assertFalse(is_valid_npi(npi))
 
     def test_too_short(self):

@@ -1,9 +1,9 @@
 """
 test_normalize.py
 -----------------
-اختبارات وحدة لـ normalize.py — الاسم / التخصص / التليفون / العنوان.
+Unit tests for normalize.py — name / specialty / phone / address.
 
-التشغيل:
+Running:
     python3 test_normalize.py
     python3 -m unittest -v
 """
@@ -40,7 +40,7 @@ class NormalizeNameTest(unittest.TestCase):
         self.assertEqual(normalize_name("Prof. Sara Ali")["display"], "Sara Ali")
 
     def test_comma_suffix_md_still_clean(self):
-        # "Sara Ali, MD" — الفاصلة بتتعامل كـ Last,First بس MD لقب فبيتشال
+        # "Sara Ali, MD" — the comma is treated as Last,First but MD is a title so it gets stripped
         self.assertEqual(normalize_name("Sara Ali, MD")["display"], "Sara Ali")
 
     def test_last_first_flip(self):
@@ -48,12 +48,12 @@ class NormalizeNameTest(unittest.TestCase):
 
     def test_apostrophe_preserved_in_display(self):
         r = normalize_name("Dr. John O'Connor")
-        self.assertEqual(r["display"], "John O'Connor")   # مش "O'connor"
+        self.assertEqual(r["display"], "John O'Connor")   # not "O'connor"
         self.assertEqual(r["compare"], "john oconnor")
 
     def test_hyphen_preserved_in_display(self):
         r = normalize_name("Sara Al-Hassan")
-        self.assertEqual(r["display"], "Sara Al-Hassan")  # مش "Al-hassan"
+        self.assertEqual(r["display"], "Sara Al-Hassan")  # not "Al-hassan"
         self.assertEqual(r["compare"], "sara alhassan")
 
 
@@ -66,7 +66,7 @@ class NormalizeSpecialtyTest(unittest.TestCase):
         )
 
     def test_desc_display_and_compare(self):
-        r = normalize_specialty("x", "General  Practice")   # مسافة مزدوجة
+        r = normalize_specialty("x", "General  Practice")   # double space
         self.assertEqual(r["display"], "General Practice")
         self.assertEqual(r["compare"], "general practice")
 

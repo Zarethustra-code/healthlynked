@@ -9,8 +9,7 @@ Everything runs on the Python standard library (`sqlite3`, `csv`, `json`,
 `urllib`) — there is nothing to `pip install`. All data lives in a single
 SQLite file, `healthlynked.db`.
 
-> Note: the inline code comments are written in Arabic; this README summarizes
-> the system in English.
+> All code, comments, and output are in English.
 
 ---
 
