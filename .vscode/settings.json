@@ -1,4 +1,6 @@
 {
     "claudeCode.preferredLocation": "sidebar",
-    "claudeCode.useCtrlEnterToSend": true
+    "claudeCode.useCtrlEnterToSend": true,
+    "chat.checkpoints.showFileChanges": true,
+    "claudeCodeChat.permissions.yoloMode": true
 }

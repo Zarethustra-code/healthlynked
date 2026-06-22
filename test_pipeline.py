@@ -237,5 +237,74 @@ class SecondSourceSmokeTest(_TempDBTest):
         self.assertTrue(all(r["source_name"] == "clinic_site" for r in rows))
 
 
+class IndependenceScoringTest(_TempDBTest):
+    """
+    خطوة 7 (الاستقلالية) لازم تأثّر في الثقة فعلاً — مش مجرد دالة مش متنادى عليها.
+    نفس التغيير بالظبط من مصدرين مختلفين:
+      • clinic_site  → مستقل عن nppes      → بدون خصم
+      • cms          → مش مستقل (بياخد من nppes) → خصم INDEPENDENCE_PENALTY
+    بنختار حقل (specialty) مفيش فيه أيٌّ من المصدرين صاحب سلطة، عشان الفرق
+    الوحيد بين الحالتين يكون الاستقلالية بس.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._add_provider("1000000001")
+        self._add_provider("1000000002")
+        self._add_external("1000000001", source_name="clinic_site",
+                           specialty="Internal Medicine")
+        self._add_external("1000000002", source_name="cms",
+                           specialty="Internal Medicine")
+        _quiet(compare.main)
+
+    def _conf_and_reason(self):
+        with self._conn() as c:
+            rows = {r["npi"]: r for r in c.execute(
+                "SELECT * FROM proposed_changes").fetchall()}
+        return rows
+
+    def test_non_independent_source_is_penalized(self):
+        rows = self._conf_and_reason()
+        indep = rows["1000000001"]["confidence"]   # clinic_site
+        dep   = rows["1000000002"]["confidence"]   # cms
+        self.assertAlmostEqual(dep, indep - compare.INDEPENDENCE_PENALTY, places=2,
+                               msg="المصدر المش مستقل لازم يتخصم منه بالظبط")
+
+    def test_independence_shows_in_explanation(self):
+        rows = self._conf_and_reason()
+        self.assertIn("مستقل", rows["1000000001"]["reason"])
+        self.assertIn("مش مستقل", rows["1000000002"]["reason"])
+
+
+class EmptySourceGuardTest(_TempDBTest):
+    """
+    حماية من فقدان البيانات: المصدر التاني الفاضي مايكتبش فوق قيمة سليمة في الأصل،
+    لكن لو الأصل ناقص الحقل ده — المصدر يقدر يملاه (enrichment).
+    """
+
+    def test_empty_source_does_not_overwrite_present_value(self):
+        self._add_provider("1000000001")            # phone = (212) 555-1111
+        self._add_external("1000000001", phone="")  # المصدر التاني مفيهوش تليفون
+        _quiet(compare.main)
+        _quiet(apply_changes.main)
+        with self._conn() as c:
+            n = c.execute(
+                "SELECT COUNT(*) FROM proposed_changes WHERE field='phone'").fetchone()[0]
+            phone = c.execute(
+                "SELECT phone FROM providers WHERE npi='1000000001'").fetchone()[0]
+        self.assertEqual(n, 0, "مايتقترحش تغيير لما المصدر فاضي والأصل فيه قيمة")
+        self.assertEqual(phone, "(212) 555-1111", "البيانات السليمة لازم تفضل زي ما هي")
+
+    def test_empty_base_can_still_be_filled_from_source(self):
+        self._add_provider("1000000001", phone="")               # الأصل ناقص التليفون
+        self._add_external("1000000001", phone="(212) 555-7777")  # المصدر فيه قيمة
+        _quiet(compare.main)
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT new_value FROM proposed_changes WHERE field='phone'").fetchone()
+        self.assertIsNotNone(row, "ملء حقل ناقص في الأصل لازم يتقترح عادي")
+        self.assertEqual(row[0], "(212) 555-7777")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

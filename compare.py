@@ -57,14 +57,27 @@ FIELD_SENSITIVITY = {
 }
 
 # ثوابت مبدئية (placeholders) — بتتعاير من البيانات بعدين
-SOURCE_BASE_CONF = 0.80    # ثقة المصدر الأساسية
-AUTHORITY_BONUS  = 0.15    # بوست لو المصدر هو صاحب السلطة على الحقل
-AUTO_THRESHOLD   = 0.85    # فوقها → تحديث تلقائي
+SOURCE_BASE_CONF     = 0.80   # ثقة المصدر الأساسية
+AUTHORITY_BONUS      = 0.15   # بوست لو المصدر هو صاحب السلطة على الحقل
+INDEPENDENCE_PENALTY = 0.20   # خصم لو المصدر مش مستقل عن مصدر الأصل
+AUTO_THRESHOLD       = 0.85   # فوقها → تحديث تلقائي
+
+# مصدر جدول providers الأصلي — البيانات اتجمّعت من NPPES في fetch_data.
+# بنقيس استقلالية أي مصدر جديد بالنسبة للمصدر ده.
+BASE_SOURCE = "nppes"
 
 
 # ===========================================================================
 #  خطوة 6: مطابقة حقل واحد
 # ===========================================================================
+
+def _is_empty(val):
+    """
+    فاضي = None أو نص فراغات بس.
+    ملاحظة مهمة: الرقم 0 (زي is_active=0) مش فاضي — دي قيمة حقيقية.
+    """
+    return val is None or str(val).strip() == ""
+
 
 def _compare_value(field, old_val, new_val):
     """
@@ -117,6 +130,16 @@ def _score_and_decide(field, source):
         reason_parts.append(f"المصدر ({source}) صاحب سلطة على «{field}»")
     else:
         reason_parts.append(f"المصدر ({source}) مش صاحب سلطة على «{field}»")
+
+    # خطوة 7: استقلالية المصدر عن مصدر الأصل (BASE_SOURCE).
+    #   مصدر مستقل بيختلف معانا  = دليل حقيقي → نحترمه.
+    #   مصدر مش مستقل (بياخد من نفس منبعنا) = الاختلاف غالبًا نسخة قديمة
+    #   مش تغيير حقيقي → نقلّل الثقة ونقرّبه لمراجعة بشرية.
+    if _are_independent(BASE_SOURCE, source):
+        reason_parts.append(f"المصدر ({source}) مستقل عن الأصل ({BASE_SOURCE}) → تأكيد أقوى")
+    else:
+        conf -= INDEPENDENCE_PENALTY
+        reason_parts.append(f"المصدر ({source}) مش مستقل عن الأصل ({BASE_SOURCE}) → ثقة أقل")
 
     # تأثير حساسية الحقل
     sensitivity = FIELD_SENSITIVITY.get(field, 0.5)
@@ -173,6 +196,7 @@ def main():
     changes = 0
     auto = 0
     review = 0
+    skipped_empty = 0
 
     for ext in externals:
         (npi, source, phone, street, city, state, zip_, specialty, is_active) = ext
@@ -193,7 +217,15 @@ def main():
             if _compare_value(field, old_val, new_val):
                 continue   # متطابق → مفيش تغيير
 
-            # خطوة 8: ثقة + قرار + شرح (خطوة 7 الاستقلالية مدمجة في الثقة)
+            # حماية من فقدان البيانات: المصدر التاني قيمته فاضية والأصل فيه قيمة.
+            # ده غالبًا «المصدر مابيحملش الحقل ده» مش «القيمة اتغيّرت لفاضي»،
+            # فممنوع نقترح نكتب فاضي فوق بيانات سليمة (خصوصًا تحديث تلقائي).
+            # العكس — ملء حقل ناقص في الأصل من المصدر — مسموح وبيعدّي عادي.
+            if _is_empty(new_val) and not _is_empty(old_val):
+                skipped_empty += 1
+                continue
+
+            # خطوة 7 (الاستقلالية) + خطوة 8 (الثقة + القرار + الشرح)
             conf, decision, reason = _score_and_decide(field, source)
 
             cur.execute(
@@ -217,6 +249,8 @@ def main():
     print(f"🔍 إجمالي التغييرات المكتشفة : {changes}")
     print(f"🟢 تحديث تلقائي (AUTO)        : {auto}")
     print(f"🟠 مراجعة بشرية (REVIEW)      : {review}")
+    if skipped_empty:
+        print(f"🛡️  اتجاهلوا (مصدر فاضي)      : {skipped_empty}")
     print("=" * 55)
 
 
