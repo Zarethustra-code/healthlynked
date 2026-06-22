@@ -8,7 +8,7 @@
 > result is **~$0.17 per 1,000 records in AI spend**, a directory that
 > auto-corrects what it's sure about, and a full audit trail behind every
 > change. The pipeline already runs end-to-end on ~1,000 live cardiologist
-> records pulled from the federal NPPES registry, with 55 passing tests.
+> records pulled from the federal NPPES registry, with 61 passing tests.
 
 ---
 
@@ -28,6 +28,7 @@ standard library, one SQLite file, **zero `pip install`**.
 | Batch change detection + auto/review decision | `compare.py` | ✅ + tests |
 | Apply auto-updates, queue reviews, write audit log | `apply_changes.py` | ✅ + tests |
 | Duplicate / movement / inactive / practice-location detection | `detect.py` | ✅ |
+| **LLM extraction of fields from a practice page's free text** | `llm_extract.py` (live Messages API + offline demo) | ✅ + tests |
 | Per-1,000-record cost model | `cost_estimate.py` | ✅ |
 | Accuracy measurement (precision / recall / F1) | `evaluate.py` + `make_dirty_data.py` | ✅ |
 | Human-review dashboard | `Review dashboard.html` + `export_review.py` | ✅ |
@@ -341,11 +342,24 @@ for ambiguity**, applied only after cheap deterministic methods are exhausted:
 | "Same value?" comparison | `field_compare_form` | exact after normalization |
 | Confidence + decision | `confidence.py` arithmetic | explainable, no tokens |
 | **Fuzzy entity match** ("Dr. J. Smith" vs "John Smith MD" at a new address) | **LLM (Haiku, batched)** | judgment beyond string distance |
-| **Extract fields from a practice website's free text** | **LLM (Haiku, batched)** | unstructured → structured |
+| **Extract fields from a practice website's free text** | **LLM (Haiku, batched)** — *implemented* | unstructured → structured |
 | Summarize a hard review case for the human | LLM (optional) | speeds the reviewer |
 
 This keeps cost low, keeps the core **explainable** (no black box behind a
 directory edit), and keeps the LLM where it adds real value.
+
+**Wired and demonstrated, not just designed.** `llm_extract.py` implements the
+website-extraction case against the **live Anthropic Messages API** (Haiku 4.5,
+**structured outputs** for guaranteed-valid JSON, **raw HTTPS via `urllib` — no
+SDK**, so the zero-dependency property holds). Crucially, the LLM is wired as a
+*source adapter*: its output is not trusted directly but flows into the same
+`confidence.py` engine as every other source. `python3 llm_extract.py --pipeline`
+shows it end to end — the LLM reads a messy "Contact Us" blurb, extracts the
+fields, and because **NPPES independently corroborates the new phone** it
+auto-updates (0.97), while the single-source address fields are held for human
+review. The LLM proposes; the deterministic engine decides. Set
+`ANTHROPIC_API_KEY` for a live call; the bundled demo runs offline. (At scale
+these calls go through the Batch API, −50%, per §9.)
 
 ---
 
@@ -462,12 +476,16 @@ python3 confidence.py
 # Directory-health detectors (duplicates, practices, moves, inactive, stale)
 python3 detect.py
 
+# LLM field extraction from a practice page (offline demo; set ANTHROPIC_API_KEY for live)
+python3 llm_extract.py             # extract structured fields from free text
+python3 llm_extract.py --pipeline  # LLM extraction -> corroborate (NPPES) -> decision
+
 # Cost model (override the levers)
 python3 cost_estimate.py --pct-llm 0.08 --pct-review 0.05
 
 # Accuracy harness (generate labeled data first) + the test suite
 python3 make_dirty_data.py && python3 evaluate.py
-python3 -m unittest        # 55 tests
+python3 -m unittest        # 61 tests
 ```
 
 *No installation. Python 3 standard library only. Internet required for the

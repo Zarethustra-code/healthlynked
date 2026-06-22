@@ -282,6 +282,41 @@ def normalize_address(street, city, state, postal):
 
 
 # ===========================================================================
+#  STATE  ✅  (full name or abbreviation -> USPS 2-letter)
+# ===========================================================================
+
+_US_STATES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "district of columbia": "DC", "florida": "FL", "georgia": "GA", "hawaii": "HI",
+    "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI",
+    "south carolina": "SC", "south dakota": "SD", "tennessee": "TN", "texas": "TX",
+    "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+}
+
+
+def normalize_state(value):
+    """Return the USPS 2-letter code (UPPER). Accepts 'FL', 'fl', or 'Florida'.
+
+    This is what stops a source that writes 'Florida' from looking like a change
+    away from a stored 'FL' — same state, different spelling.
+    """
+    s = ("" if value is None else str(value)).strip()
+    if not s:
+        return ""
+    if len(s) == 2:
+        return s.upper()
+    return _US_STATES.get(s.lower(), s.upper())
+
+
+# ===========================================================================
 #  FIELD DISPATCH — canonical compare/display form keyed by column name
 # ===========================================================================
 #  One place that maps a provider column -> its normalized comparison key and
@@ -302,6 +337,8 @@ def field_compare_form(field, value):
         return normalize_specialty("", value)["compare"]
     if field == "name":
         return normalize_name(value)["compare"]
+    if field == "state":
+        return normalize_state(value).lower()
     if field == "zip":
         return re.sub(r"\D", "", "" if value is None else str(value))[:5]
     return ("" if value is None else str(value)).strip().lower()
@@ -316,6 +353,8 @@ def field_display_form(field, value):
         return normalize_name(value)["display"] or plain
     if field == "specialty":
         return normalize_specialty("", value)["display"] or plain
+    if field == "state":
+        return normalize_state(value) or plain
     return plain
 
 
