@@ -281,6 +281,44 @@ def normalize_address(street, city, state, postal):
     }
 
 
+# ===========================================================================
+#  FIELD DISPATCH — canonical compare/display form keyed by column name
+# ===========================================================================
+#  One place that maps a provider column -> its normalized comparison key and
+#  its storable display value. Used by both the batch comparator (compare.py)
+#  and the live single-record verifier (live_verify.py) so the two never drift.
+
+def field_compare_form(field, value):
+    """Canonical comparison key for a given provider column.
+
+    Note: only None / blank string is "empty". The integer 0 (e.g. is_active=0,
+    a deactivation) is a real value and must survive normalization.
+    """
+    if field == "phone":
+        return normalize_phone(value)["compare"]
+    if field == "street":
+        return normalize_address(value, "", "", "")["compare"].split("|")[0]
+    if field == "specialty":
+        return normalize_specialty("", value)["compare"]
+    if field == "name":
+        return normalize_name(value)["compare"]
+    if field == "zip":
+        return re.sub(r"\D", "", "" if value is None else str(value))[:5]
+    return ("" if value is None else str(value)).strip().lower()
+
+
+def field_display_form(field, value):
+    """Storable/displayable value for a given provider column."""
+    plain = "" if value is None else str(value)
+    if field == "phone":
+        return normalize_phone(value)["display"] or plain
+    if field == "name":
+        return normalize_name(value)["display"] or plain
+    if field == "specialty":
+        return normalize_specialty("", value)["display"] or plain
+    return plain
+
+
 # ---------------------------------------------------------------------------
 # اختبارات سريعة — شغّل الملف مباشرة عشان تشوف النتيجة
 # ---------------------------------------------------------------------------

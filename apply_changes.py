@@ -36,6 +36,20 @@ def main():
     for (cid, npi, field, old_val, new_val, source, decision) in changes:
 
         if decision == "AUTO_UPDATE":
+            # Defense-in-depth backstop (mirrors confidence.py's hard rules):
+            # never auto-deactivate a provider or auto-rename, even if a bad
+            # AUTO_UPDATE row somehow reaches this layer. Route it to review.
+            if field == "name" or (field == "is_active"
+                                   and str(old_val) == "1" and str(new_val) == "0"):
+                cur.execute(
+                    "UPDATE proposed_changes SET status = 'pending_review' WHERE id = ?",
+                    (cid,))
+                cur.execute(
+                    "INSERT INTO providers_audit_log (npi, action, detail) VALUES (?, 'FLAGGED_REVIEW', ?)",
+                    (npi, f"{field}: '{old_val}' → '{new_val}' (من {source}) [blocked auto: high-stakes]"))
+                pending += 1
+                continue
+
             # أمان: نتأكد العمود مسموح تحديثه
             if field not in UPDATABLE:
                 skipped += 1
