@@ -75,7 +75,10 @@ def cms_adapter(npi):
         "state": r.get("state") or "",
         "zip": r.get("zip_code") or "",
     }
-    return {"source": "cms", "fields": {k: v for k, v in fields.items() if v}}
+    carried = {k: v for k, v in fields.items() if v}
+    if not carried:                       # all-blank row → treat like no match
+        return None
+    return {"source": "cms", "fields": carried}
 
 
 if __name__ == "__main__":
