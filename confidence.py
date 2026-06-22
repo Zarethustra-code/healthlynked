@@ -262,7 +262,10 @@ def score_field(field, old_value, candidates, old_compare=None):
     new_display = next((c.get("display") for c in best_cands if c.get("display")), best_value)
 
     raw_sources = [c.get("source", "unknown") for c in best_cands]
-    supporting = sorted({_pretty(s) for s in raw_sources})
+    # Display + the "N independent sources agree" count use the independence-
+    # collapsed set, so two channels of the SAME source (e.g. nppes + nppes_bulk)
+    # never read as "2 independent sources" — the reason must match the math.
+    supporting = sorted({_pretty(s) for s in indep_sources})
     decision, reason = _decide(field, old_value, new_display, conf, supporting, raw_sources, conflict)
 
     return {
@@ -387,7 +390,8 @@ def _is_blank(v):
 
 
 _PRETTY = {
-    "nppes": "NPI Registry", "cms": "CMS", "state_board": "State Medical Board",
+    "nppes": "NPI Registry", "nppes_bulk": "NPI Registry (bulk)", "cms": "CMS",
+    "state_board": "State Medical Board",
     "practice_site": "Practice Website", "clinic_site": "Practice Website",
 }
 

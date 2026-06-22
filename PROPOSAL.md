@@ -44,17 +44,18 @@ brief's exact recommendation schema. Real runs (no fixtures):
 **(a) Two live sources disagree → human_review.** `python3 live_verify.py
 1003040676` consults both registries. NPPES reports a New York phone; the CMS
 NDF reports a Boston practice address entirely. The engine sees the cross-source
-disagreement and refuses to act:
+disagreement and refuses to act (verbatim from a live run — live data may shift):
 
 ```json
 {
   "provider_id": "1003040676", "npi": "1003040676",
   "change_detected": true,
   "changes": [
-    {"field": "phone",  "old_value": "(516) 972-1555", "new_value": "(212) 305-2913",
-     "confidence_score": 0.595, "supporting_sources": ["NPI Registry"]},
-    {"field": "city",   "old_value": "New York", "new_value": "BOSTON",
-     "confidence_score": 0.85, "supporting_sources": ["CMS"]}
+    {"field": "phone",  "old_value": "(516) 972-1555",      "new_value": "(212) 305-2913", "confidence_score": 0.595, "supporting_sources": ["NPI Registry"]},
+    {"field": "street", "old_value": "622 West 168th Street","new_value": "800 WASHIGTON ST","confidence_score": 0.85,  "supporting_sources": ["CMS"]},
+    {"field": "city",   "old_value": "New York",            "new_value": "BOSTON",          "confidence_score": 0.85,  "supporting_sources": ["CMS"]},
+    {"field": "state",  "old_value": "NY",                  "new_value": "MA",              "confidence_score": 0.85,  "supporting_sources": ["CMS"]},
+    {"field": "zip",    "old_value": "10032",               "new_value": "021111552",       "confidence_score": 0.85,  "supporting_sources": ["CMS"]}
   ],
   "overall_confidence": 0.799,
   "recommended_action": "human_review",
@@ -63,9 +64,14 @@ disagreement and refuses to act:
 }
 ```
 
-**(b) Two live sources confirm → no_change.** For `1003082850`, NPPES *and* CMS
-both agree with what we hold — the record is confirmed accurate by two
-independent federal feeds (`"recommended_action": "no_change"`,
+The phone scores **0.595** because NPPES and CMS report *different* numbers — a
+true cross-source conflict (the ×0.7 penalty); the address fields are CMS-only
+(0.85). The record's mean is 0.799, and because at least one field conflicts the
+whole record is routed to a human. No field is silently overwritten.
+
+**(b) Two live sources confirm → no_change.** For `1003082850`, in a live run
+NPPES *and* CMS both agreed with what we hold — the record was confirmed accurate
+by two independent federal feeds (`"recommended_action": "no_change"`,
 `"sources_consulted": ["cms", "nppes"]`).
 
 **(c) Corroborated agreement → auto_update** (the brief's example 1).
@@ -155,6 +161,11 @@ Two properties drive correctness, both encoded in `confidence.py → SOURCES`:
   the NPPES API and its monthly **bulk file** are the *same data* via two
   channels, so they share an `independence_group` and never count as two
   confirmations. We keep only the most reliable source per group before scoring.
+  *Caveat:* full independence is a modeling **approximation** — NPPES and the CMS
+  NDF share some federal-enrollment lineage and are partially correlated, so
+  two-source agreement is slightly optimistic. Calibration (§13) replaces the
+  binary grouping with measured agreement rates; until then the conservative
+  per-field thresholds and the human-review gate bound any over-corroboration.
 
 **Legality / ToS.** NPPES and CMS are public-domain U.S. government data. State
 boards are public records. Practice-website reads are rate-limited, identify
@@ -258,7 +269,10 @@ stored) and a `compare` form (canonical, for matching):
 
 **Address normalization is the matching key** — `field_compare_form("street", …)`
 is what lets `"100 Main St"` and `"100 Main Street, Ste 4"` reconcile, and what
-powers practice-location clustering.
+powers practice-location clustering. (Matching is intentionally at **street
+granularity**: a suite/unit-only change is treated as the same location and is
+*not* currently surfaced as a change — a known limitation slated for the
+practice-entity work in §13, Month 2.)
 
 **Detection** (`detect.py`, no network / no LLM — runs over the DB):
 - **Duplicate providers** — same normalized name sharing a phone or address under
@@ -389,10 +403,11 @@ The MVP is SQLite + stdlib; the *design* scales without changing its shape:
   (stale, risky, high-traffic). Re-verification is embarrassingly parallel:
   shard by NPI across workers pulling from a queue.
 - **Confidence scoring is O(1) per field** and stateless — it parallelizes
-  trivially and never becomes the bottleneck. **Measured:** the scoring engine
-  runs **~242,000 field-scores/sec on a single core** (≈ 30,000 records/sec/core
-  at ~8 fields each), so 1M records score in well under a minute per core, before
-  any parallelism. The bottleneck is never the math — it's source I/O and humans.
+  trivially and never becomes the bottleneck. **Measured** (run `python3
+  benchmark.py`): the scoring engine does **~200,000+ field-scores/sec on a
+  single core** (≈ 25,000–30,000 records/sec/core at ~8 fields each), so 1M
+  records score in well under a minute per core, before any parallelism. The
+  bottleneck is never the math — it's source I/O and humans.
 - **LLM batching** — accumulate the hard fraction and submit via the Batch API
   (24-hour SLA, −50%); nothing in the critical path waits on an LLM.
 - **Cost at 1M scale (be precise):** AI spend is **~$170** per full cycle (the

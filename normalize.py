@@ -262,12 +262,12 @@ def normalize_address(street, city, state, postal):
     state_disp = str(state or "").strip().upper()
     zip_digits = re.sub(r"\D", "", str(postal or ""))[:5]
 
-    # 4) نسخة المقارنة الموحّدة
+    # 4) نسخة المقارنة الموحّدة (الولاية تتوحّد لكود حرفين عشان "Florida" == "FL")
     compare = "|".join([
         street_compare,
         unit,
         city.lower(),
-        state_disp.lower(),
+        normalize_state(state).lower(),
         zip_digits,
     ])
 

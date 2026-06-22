@@ -14,6 +14,34 @@ SQLite file, `healthlynked.db`.
 
 ---
 
+## 📌 Bounty submission — start here
+
+This repo is a **hybrid (Option C)** submission for the HealthLynked
+provider-data-quality bounty: a runnable prototype **plus** a production plan.
+
+- **Read the proposal:** [`PROPOSAL.md`](PROPOSAL.md) — architecture, the
+  confidence formula, source reliability/independence, safe-update rules, cost
+  model, scaling, 3-month roadmap, and a criteria/bonus coverage matrix.
+- **See it run in 60 seconds (offline, no setup):**
+  ```bash
+  python3 confidence.py             # the confidence formula on the brief's examples
+  python3 live_verify.py --demo     # corroborated auto-update + a conflict case
+  python3 llm_extract.py --pipeline # LLM reads free text -> corroborate -> decide
+  ```
+- **See it run on LIVE data (needs internet):**
+  ```bash
+  python3 live_verify.py 1003040676 # NPPES vs CMS disagree -> human_review
+  python3 live_verify.py 1003082850 # NPPES + CMS confirm    -> no_change
+  ```
+- **Run the test suite:** `python3 -m unittest` (65 tests).
+
+**Key new modules:** `confidence.py` (one scoring engine), `live_verify.py`
++ `cms_source.py` (two live sources: NPPES + CMS), `llm_extract.py` (LLM as a
+source adapter), `detect.py` (duplicates / movement / inactive / practices),
+`cost_estimate.py` (per-1,000-record cost). Still **zero `pip install`**.
+
+---
+
 ## What it does
 
 1. **Fetch** ~1,000 cardiologists (NPI-1 individuals) from the official

@@ -135,6 +135,10 @@ def extract_provider_fields(page_text, offline=False, model=MODEL):
         live = _call_anthropic(page_text, model=model)
         if live is not None:
             return live
+        # A key was present but the live call returned nothing -> a real
+        # failure. Don't mask it with the canned demo answer.
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return None
     # Offline / no-key path.
     if page_text == DEMO_PAGE:
         return dict(_DEMO_CANNED)
@@ -177,7 +181,9 @@ def _print_extraction(offline):
 def _pipeline_demo(offline):
     """Show the LLM output flowing through the real confidence engine: the
     practice site (LLM-extracted) and NPPES agree on a new phone, so the change
-    is corroborated and auto-applies; the address (LLM only) needs the owner."""
+    is corroborated and auto-applies; the address is owner-backed but
+    single-source, so its confidence (~0.79) falls just under the address
+    auto-update bar (0.86) and is held for human review."""
     import live_verify
 
     stored = {
