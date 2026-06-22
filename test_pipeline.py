@@ -247,10 +247,11 @@ class IndependenceScoringTest(_TempDBTest):
 
     بنختار حقل (specialty) مفيهوش أي من المصادر دي صاحب سلطة، عشان نعزل
     تأثير الاستقلالية لوحده.
-      • npi1: مصدر واحد (state_board)                       → تأكيد أقل
-      • npi2: مصدرين مستقلين (state_board + practice_site)  → تأكيد أعلى
-      • npi3: مصدر واحد (nppes)                              → أساس
-      • npi4: مصدرين من نفس العائلة (nppes + cms)            → نفس الأساس (مش بيتعدّوا مرتين)
+      • npi1: مصدر واحد (state_board)                          → تأكيد أقل
+      • npi2: مصدرين مستقلين (state_board + practice_site)     → تأكيد أعلى
+      • npi3: مصدر واحد (nppes)                                 → أساس
+      • npi4: مصدرين من نفس العائلة (nppes + nppes_bulk)        → نفس الأساس (مش بيتعدّوا مرتين)
+        (الـ API والـ bulk نفس بيانات NPPES — مش تأكيد مستقل)
     """
 
     def setUp(self):
@@ -268,10 +269,10 @@ class IndependenceScoringTest(_TempDBTest):
         # npi3: مصدر واحد
         self._add_external("1000000003", source_name="nppes",
                            specialty="Internal Medicine")
-        # npi4: مصدرين من نفس العائلة (cms بياخد من nppes)
+        # npi4: مصدرين من نفس العائلة (NPPES API + NPPES bulk = نفس البيانات)
         self._add_external("1000000004", source_name="nppes",
                            specialty="Internal Medicine")
-        self._add_external("1000000004", source_name="cms",
+        self._add_external("1000000004", source_name="nppes_bulk",
                            specialty="Internal Medicine")
         _quiet(compare.main)
 
@@ -290,9 +291,9 @@ class IndependenceScoringTest(_TempDBTest):
     def test_same_family_sources_do_not_double_count(self):
         rows = self._rows()
         single = rows["1000000003"]["confidence"]   # nppes فقط
-        family = rows["1000000004"]["confidence"]   # nppes + cms (نفس العائلة)
+        family = rows["1000000004"]["confidence"]   # nppes + nppes_bulk (نفس العائلة)
         self.assertAlmostEqual(family, single, places=2,
-                               msg="cms مش مصدر مستقل عن nppes فمايزوّدش التأكيد")
+                               msg="الـ bulk مش مصدر مستقل عن الـ API فمايزوّدش التأكيد")
 
     def test_every_change_has_an_explanation(self):
         # Explainability: كل صف لازم يكون ليه شرح واضح

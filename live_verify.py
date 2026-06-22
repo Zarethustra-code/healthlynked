@@ -37,6 +37,7 @@ from normalize import field_compare_form as compare_form, field_display_form as 
 from fetch_data import (
     extract_name, extract_taxonomy, extract_status, extract_phone, extract_address,
 )
+from cms_source import cms_adapter   # second live source (CMS National Downloadable File)
 
 BASE = Path(__file__).parent
 DB_PATH = BASE / "healthlynked.db"
@@ -165,7 +166,8 @@ def verify_provider(npi, conn=None, extra_adapters=None):
     if not stored:
         return {"npi": str(npi), "error": "provider not found in HealthLynked database"}
 
-    adapters = [nppes_adapter] + list(extra_adapters or [])
+    # Two genuinely-independent live sources by default: NPPES + CMS NDF.
+    adapters = [nppes_adapter, cms_adapter] + list(extra_adapters or [])
     return verify_record(stored, adapters, provider_id=stored["npi"])
 
 

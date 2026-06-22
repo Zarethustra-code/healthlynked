@@ -8,7 +8,7 @@
 > result is **~$0.17 per 1,000 records in AI spend**, a directory that
 > auto-corrects what it's sure about, and a full audit trail behind every
 > change. The pipeline already runs end-to-end on ~1,000 live cardiologist
-> records pulled from the federal NPPES registry, with 61 passing tests.
+> records pulled from the federal NPPES registry, with 65 passing tests.
 
 ---
 
@@ -21,7 +21,7 @@ standard library, one SQLite file, **zero `pip install`**.
 | Capability the brief asks for | Where it lives | Status |
 |---|---|---|
 | Pull provider data from a trusted source | `fetch_data.py` (NPPES API, ~1,000 cardiologists) | ✅ live |
-| **Verify one record against a live source, emit the brief's exact JSON** | `live_verify.py` (live NPPES diff) | ✅ live |
+| **Verify one record against TWO live sources, emit the brief's exact JSON** | `live_verify.py` + `cms_source.py` (live NPPES + CMS) | ✅ live |
 | NPI validation (Luhn check digit) | `validation.py` → `is_valid_npi()` | ✅ + tests |
 | Normalize names / addresses / phones / specialties | `normalize.py` (display + compare forms) | ✅ + tests |
 | **One documented confidence formula, used everywhere** | `confidence.py` | ✅ + tests |
@@ -36,41 +36,47 @@ standard library, one SQLite file, **zero `pip install`**.
 | Audit trail of every action | `providers_audit_log` table (`database.py`) | ✅ |
 
 **The centerpiece** — `live_verify.py` answers the brief's "Example Problem"
-literally. Given a stored record it queries the **live** NPI Registry, diffs
-every field through the shared normalizer, scores each difference, and emits the
-brief's exact recommendation schema. Two real runs show the safety logic working:
+literally. Given a stored record it queries **two genuinely-independent live
+federal sources — NPPES and the CMS National Downloadable File** — diffs every
+field through the shared normalizer, scores each difference, and emits the
+brief's exact recommendation schema. Real runs (no fixtures):
 
-**(a) Live, real federal data — the safety gate in action.** `python3
-live_verify.py 1003040676` finds the registry now lists a different phone than
-we hold. Because it comes from a *single* source that is not the field's owner,
-the engine refuses to auto-overwrite patient-facing data and routes it to a human:
+**(a) Two live sources disagree → human_review.** `python3 live_verify.py
+1003040676` consults both registries. NPPES reports a New York phone; the CMS
+NDF reports a Boston practice address entirely. The engine sees the cross-source
+disagreement and refuses to act:
 
 ```json
 {
   "provider_id": "1003040676", "npi": "1003040676",
   "change_detected": true,
-  "changes": [{
-    "field": "phone", "old_value": "(516) 972-1555", "new_value": "(212) 305-2913",
-    "confidence_score": 0.85, "supporting_sources": ["NPI Registry"]
-  }],
-  "overall_confidence": 0.85,
+  "changes": [
+    {"field": "phone",  "old_value": "(516) 972-1555", "new_value": "(212) 305-2913",
+     "confidence_score": 0.595, "supporting_sources": ["NPI Registry"]},
+    {"field": "city",   "old_value": "New York", "new_value": "BOSTON",
+     "confidence_score": 0.85, "supporting_sources": ["CMS"]}
+  ],
+  "overall_confidence": 0.799,
   "recommended_action": "human_review",
-  "reason": "At least one change did not clear the auto-update bar. Sent to human review.",
-  "sources_consulted": ["nppes"]
+  "reason": "Sources disagree on at least one field. Manual verification recommended.",
+  "sources_consulted": ["cms", "nppes"]
 }
 ```
 
-This is the corroboration guarantee enforced on **real live data**: one
-unconfirmed source is never enough to silently change a phone number. When the
-registry agrees with us, it returns `recommended_action: "no_change"`.
+**(b) Two live sources confirm → no_change.** For `1003082850`, NPPES *and* CMS
+both agree with what we hold — the record is confirmed accurate by two
+independent federal feeds (`"recommended_action": "no_change"`,
+`"sources_consulted": ["cms", "nppes"]`).
 
-**(b) Multi-source agreement → auto_update** (the brief's example 1).
-`python3 live_verify.py --demo` runs the same code path with three corroborating
-sources and produces the auto-update the brief illustrates (address + phone,
-`overall_confidence` ≈ 0.98), plus a conflict case that drops to `human_review`
-at 0.60. Today only the **NPPES adapter is wired to a live system**; CMS, state
-boards, and practice sites are designed stubs behind the same `Adapter`
-contract (see `live_verify.py`), and standing them up is Month-1 work (§13).
+**(c) Corroborated agreement → auto_update** (the brief's example 1).
+`python3 live_verify.py --demo` shows the case where independent sources agree on
+a *new* value: address + phone confirmed by multiple sources → auto-update at
+`overall_confidence` ≈ 0.98, plus a conflict case that drops to `human_review`.
+
+Two of the four named sources (NPPES, CMS) are **wired to live systems today**;
+state boards and practice sites are designed stubs behind the same `Adapter`
+contract (see `live_verify.py` / `cms_source.py`), and the LLM practice-site
+extractor (§10) is also live.
 
 ---
 
@@ -125,25 +131,30 @@ ones are *independent* of each other, and never pay for what's free.
 
 | Source | What it's authoritative for | Reliability* | Cost | Status today |
 |---|---|---|---|---|
-| **NPPES / NPI Registry** | NPI, name, specialty/taxonomy, active status | 0.85 | **Free, keyless** | **✅ wired** (live API) + monthly bulk |
-| **CMS** (Care Compare, PECOS-derived) | affiliations, practice linkage | 0.85 | **Free** bulk | adapter stub (Month 1) |
+| **NPPES / NPI Registry** (self-reported) | NPI, name, specialty/taxonomy, active status | 0.85 | **Free, keyless** | **✅ wired** (live API) + bulk |
+| **CMS NDF** (Doctors & Clinicians, PECOS-derived) | practice phone/address, affiliations | 0.85 | **Free, keyless** | **✅ wired** (live API) |
 | **State medical boards** | license status, active/retired | 0.90 | Free / low | adapter stub (Month 1) |
-| **Practice websites** | phone, address, suite, current roster | 0.75 | Bandwidth only | adapter stub (Month 1) |
+| **Practice websites** | phone, address, suite, current roster | 0.75 | Bandwidth only | **✅ via LLM** (`llm_extract.py`) |
 
 *Reliability weights are **informed priors**, not yet empirically calibrated.
 They are tuned against ground truth via `evaluate.py` (today: synthetic labels;
-Month 1: a labeled HealthLynked sample). Only NPPES is wired to a live system
-today; the other three are designed adapters behind the same `Adapter` contract.
+Month 1: a labeled HealthLynked sample). **Two of the four sources are wired to
+live systems today** (NPPES + CMS NDF); state boards remain a designed adapter
+behind the same `Adapter` contract.
 
 Two properties drive correctness, both encoded in `confidence.py → SOURCES`:
 
 - **Authority** — each field has a natural owner. A practice publishes its own
   phone first; NPPES is the registry of record for taxonomy and status. A
   change from the field's owner gets a confidence bonus.
-- **Independence** — *CMS re-publishes NPPES*, so the two are **not** independent
-  evidence. We group sources by `independence_group` and count only one per
-  group when measuring corroboration, so a CMS+NPPES "agreement" can't masquerade
-  as two independent confirmations.
+- **Independence** — corroboration only counts *independent* sources. NPPES
+  (self-reported registry) and the CMS NDF (Medicare-enrollment / PECOS-derived)
+  are **different collection processes**, so they are independent and genuinely
+  disagree in the wild (we observed one provider listed in NY by NPPES and in
+  Boston by CMS) — when they *do* agree, that is real confirmation. By contrast,
+  the NPPES API and its monthly **bulk file** are the *same data* via two
+  channels, so they share an `independence_group` and never count as two
+  confirmations. We keep only the most reliable source per group before scoring.
 
 **Legality / ToS.** NPPES and CMS are public-domain U.S. government data. State
 boards are public records. Practice-website reads are rate-limited, identify
@@ -159,7 +170,8 @@ ideas the brief conflates: *how sure are we the new value is right* (confidence)
 vs *how sure must we be before acting without a human* (the threshold).
 
 **Step 1 — Collapse non-independent sources.** Keep only the most reliable
-source per `independence_group`. (CMS doesn't add to NPPES.)
+source per `independence_group` (e.g. the NPPES API and its bulk file are the
+same data — they don't corroborate each other; NPPES and CMS NDF do).
 
 **Step 2 — Corroboration via noisy-OR** over the surviving independent sources:
 
@@ -413,9 +425,10 @@ is exactly why sensitive fields have higher bars and hard-stop rules.
 ## 13. Implementation roadmap (the 3-month consulting plan)
 
 **Month 1 — Productionize the core.**
-- Port SQLite → Postgres; load NPPES + CMS monthly bulk files.
-- Wire the second and third real adapters (CMS, one pilot state board) behind
-  the existing `Adapter` contract in `live_verify.py`.
+- Port SQLite → Postgres; load NPPES + CMS monthly bulk files (NPPES + CMS NDF
+  live adapters already exist — `live_verify.py` / `cms_source.py`).
+- Wire one pilot **state-board** adapter behind the existing `Adapter` contract
+  (the third real source).
 - Stand up the scheduler (nightly `detect.py` prioritization → re-verify sweep).
 - Calibrate `confidence.py` constants against a labeled HealthLynked sample via
   `evaluate.py`; agree on per-field auto-update bars with HL's data team.
@@ -466,9 +479,11 @@ is exactly why sensitive fields have higher bars and hard-stop rules.
 # Full batch pipeline end-to-end (rebuilds healthlynked.db from live NPPES)
 python3 run_pipeline.py
 
-# Verify ONE provider against the LIVE NPI Registry (the brief's example problem)
-python3 live_verify.py 1003040676
-python3 live_verify.py --demo            # offline: auto-update + conflict cases
+# Verify ONE provider against TWO live sources — NPPES + CMS (the example problem)
+python3 live_verify.py 1003040676        # real cross-source disagreement -> review
+python3 live_verify.py 1003082850        # both sources confirm -> no_change
+python3 live_verify.py --demo            # offline: corroborated auto-update + conflict
+python3 cms_source.py 1003076902         # look up one NPI in the live CMS NDF
 
 # The confidence formula, reproducing the brief's two worked examples
 python3 confidence.py
@@ -485,7 +500,7 @@ python3 cost_estimate.py --pct-llm 0.08 --pct-review 0.05
 
 # Accuracy harness (generate labeled data first) + the test suite
 python3 make_dirty_data.py && python3 evaluate.py
-python3 -m unittest        # 61 tests
+python3 -m unittest        # 65 tests
 ```
 
 *No installation. Python 3 standard library only. Internet required for the
