@@ -14,10 +14,11 @@ Just run this:
     python3 run_pipeline.py
 """
 
+import sys
 import time
 from pathlib import Path
 
-from database import create_database, DB_PATH
+from database import create_database, get_connection, DB_PATH
 import fetch_data
 import make_second_source
 import pull_quality
@@ -25,10 +26,38 @@ import compare
 import apply_changes
 
 
+class PipelineError(RuntimeError):
+    """Raised when the pipeline cannot continue safely (so it never reports a false success)."""
+
+
 def banner(step, title):
     print("\n" + "█" * 60)
     print(f"  Stage {step}: {title}")
     print("█" * 60)
+
+
+def count_providers(db_path=DB_PATH):
+    """Returns how many rows are currently in the providers table."""
+    with get_connection(db_path) as conn:
+        return conn.execute("SELECT COUNT(*) FROM providers").fetchone()[0]
+
+
+def assert_providers_loaded(db_path=DB_PATH):
+    """
+    Fail-safe gate after the fetch step.
+
+    If zero providers were loaded (the API/network failed, or the search
+    returned nothing), stop the whole pipeline instead of marching through the
+    remaining stages and printing a misleading "finished successfully".
+    Returns the provider count on success.
+    """
+    n = count_providers(db_path)
+    if n == 0:
+        raise PipelineError(
+            "Fetch returned 0 provider records. Stopping pipeline instead of "
+            "reporting success. Check internet/API access or run the offline demo."
+        )
+    return n
 
 
 def main(fresh_start=True):
@@ -47,6 +76,10 @@ def main(fresh_start=True):
     # 2) Collection
     banner(2, "Collecting data (NPPES)")
     fetch_data.main()
+
+    # 2b) Fail-safe gate: never continue (and never report success) on empty data
+    loaded = assert_providers_loaded()
+    print(f"✅ Provider records loaded: {loaded}")
 
     # 3) Second source
     banner(3, "Creating the second source")
@@ -71,4 +104,11 @@ def main(fresh_start=True):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except PipelineError as e:
+        # Clean, reviewer-friendly stop (no scary traceback) + non-zero exit code
+        print("\n" + "=" * 60)
+        print(f"❌ {e}")
+        print("=" * 60)
+        sys.exit(1)

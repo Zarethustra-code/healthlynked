@@ -47,8 +47,8 @@ python3 llm_extract.py --pipeline # LLM reads free text -> corroborate -> decide
 
 | Criterion | Verdict |
 |---|---|
-| **Accuracy** | deterministic match + corroboration + P/R/F1 harness; harm-weighted bars |
-| **Scalability** | bulk ingestion, stateless O(1) scoring (benchmarked), shardable, Postgres-ready |
+| **Accuracy** | deterministic match + corroboration + harm-weighted bars; validity & update-decision harnesses on synthetic labels (real-world accuracy pending a reviewed sample) |
+| **Scalability** | bulk ingestion, stateless O(1) scoring (benchmarked separately), shardable, Postgres-ready |
 | **Cost efficiency** | free data, Haiku + batch + cache, gate-minimized review → **$0.17 AI / 1k** |
 | **Practicality** | pure stdlib, one-file DB, runs today, clean `Adapter` extension point |
 | **Explainability** | plain-English reason on every decision; every proposal retained |
@@ -81,7 +81,8 @@ standard library, one SQLite file, **zero `pip install`**.
 | Duplicate / movement / inactive / practice-location detection | `detect.py` | ✅ |
 | **LLM extraction of fields from a practice page's free text** | `llm_extract.py` (live Messages API + offline demo) | ✅ + tests |
 | Per-1,000-record cost model | `cost_estimate.py` | ✅ |
-| Accuracy measurement (precision / recall / F1) | `evaluate.py` + `make_dirty_data.py` | ✅ |
+| Record-validity measurement (precision / recall / F1) | `evaluate.py` + `make_dirty_data.py` | ✅ (synthetic labels) |
+| Update-decision measurement (auto/review/conflict/blocked) | `evaluate_update_decisions.py` | ✅ (synthetic fixtures) |
 | Human-review dashboard | `Review dashboard.html` + `export_review.py` | ✅ |
 | Batch quality gate (score /100) | `pull_quality.py` | ✅ |
 | Audit trail of every action | `providers_audit_log` table (`database.py`) | ✅ |
@@ -128,7 +129,7 @@ by two independent federal feeds (`"recommended_action": "no_change"`,
 **(c) Corroborated agreement → auto_update** (the brief's example 1).
 `python3 live_verify.py --demo` shows the case where independent sources agree on
 a *new* value: address + phone confirmed by multiple sources → auto-update at
-`overall_confidence` ≈ 0.98, plus a conflict case that drops to `human_review`.
+`overall_confidence` ≈ 0.99, plus a conflict case that drops to `human_review`.
 
 Two of the four named sources (NPPES, CMS) are **wired to live systems today**;
 state boards and practice sites are designed stubs behind the same `Adapter`
@@ -194,10 +195,12 @@ ones are *independent* of each other, and never pay for what's free.
 | **Practice websites** | phone, address, suite, current roster | 0.75 | Bandwidth only | **✅ via LLM** (`llm_extract.py`) |
 
 *Reliability weights are **informed priors**, not yet empirically calibrated.
-They are tuned against ground truth via `evaluate.py` (today: synthetic labels;
-Month 1: a labeled HealthLynked sample). **Two of the four sources are wired to
-live systems today** (NPPES + CMS NDF); state boards remain a designed adapter
-behind the same `Adapter` contract.
+The decision logic is exercised today against synthetic fixtures
+(`evaluate_update_decisions.py`) and the validity gate against synthetic noise
+(`evaluate.py`); empirical calibration requires a labeled HealthLynked sample
+(Month 1). **Two of the four sources are wired to live systems today** (NPPES +
+CMS NDF); state boards remain a designed adapter behind the same `Adapter`
+contract.
 
 Two properties drive correctness, both encoded in `confidence.py → SOURCES`:
 
@@ -380,7 +383,7 @@ Human review (10% of records, 4 min each)                $ 166.67
 Compute / bandwidth                                      $   0.05
 ------------------------------------------------------------------
 TOTAL per 1,000 records                                  $ 166.89   ($0.167/record)
-Naive 'everything' baseline (Opus/record, no batch, review 100%): $1,683.42
+Naive 'everything' baseline (Opus on every record, no batch/cache, review 100%): $1,683.42
 ```
 
 **Read this honestly.** The ~10× gap vs the naive baseline is **almost entirely
@@ -456,7 +459,7 @@ The MVP is SQLite + stdlib; the *design* scales without changing its shape:
 - **Confidence scoring is O(1) per field** and stateless — it parallelizes
   trivially and never becomes the bottleneck. **Measured** (run `python3
   benchmark.py`): the scoring engine does **~200,000+ field-scores/sec on a
-  single core** (≈ 25,000–30,000 records/sec/core at ~8 fields each), so 1M
+  single core** (≈ 25,000–30,000+ records/sec/core at ~8 fields each), so 1M
   records score in well under a minute per core, before any parallelism. The
   bottleneck is never the math — it's source I/O and humans.
 - **LLM batching** — accumulate the hard fraction and submit via the Batch API
@@ -471,20 +474,45 @@ The MVP is SQLite + stdlib; the *design* scales without changing its shape:
 
 ## 12. Accuracy measurement
 
-`evaluate.py` runs the system against `make_dirty_data.py`'s labeled good/bad
-records (real errors vs cosmetic noise) and reports a **confusion matrix +
-Precision / Recall / Accuracy / F1**, plus a per-error-type breakdown and a
-`misclassified.csv` for inspection. This is the mechanism for tuning the
-constants in `confidence.py` (thresholds, reliability weights) against ground
-truth rather than by feel. **Honest status:** today's labels are *synthetic*
-(generated noise), so the current reliability weights are informed priors, not
-empirically derived. Calibrating them against a **labeled HealthLynked sample**
-is the first concrete deliverable of the engagement (§13, Month 1) — and the
-harness is exactly how we'd prove accuracy gains.
+We measure **three different things** and keep them strictly separate so no
+number is overclaimed:
 
-The two error types are weighted by harm: a **false auto-update** (bad data goes
-live) is worse than a **false review** (a human looks at something fine), which
-is exactly why sensitive fields have higher bars and hard-stop rules.
+1. **Record validity** — `evaluate.py` scores the NPI/name intake gate against
+   `make_dirty_data.py`'s labeled good/bad records and reports a **confusion
+   matrix + Precision / Recall / Accuracy / F1** with a `misclassified.csv` for
+   inspection. This proves only that malformed records are quarantined and valid
+   ones admitted — *not* that field updates are correct.
+
+2. **Update-decision accuracy** — `evaluate_update_decisions.py` (MVP) runs
+   labeled fixtures through the real `confidence.py` engine and reports
+   **correct/false auto-update, correct/false human-review, and missed-change**
+   across the five behaviors that matter: `no_change`, `auto_update`,
+   `human_review`, `conflict`, and `blocked_unsafe` (high-confidence changes a
+   hard rule still holds for review). This is the harness that guards the
+   decision logic and would tune the thresholds/weights.
+
+3. **Scalability** — measured separately by `benchmark.py` (throughput per
+   core), not inferred from the accuracy fixtures (§11).
+
+**Honest status — what this does NOT prove.** The labels in (1) and (2) are
+*synthetic* (generated noise and hand-built fixtures chosen to exercise the
+logic). They demonstrate the pipeline *behaves as designed* and guard against
+regressions; **they are not evidence of real-world field-level accuracy.** The
+current reliability weights are therefore informed priors, not empirically
+derived.
+
+**How accuracy is actually validated.** Real numbers require a **manually
+reviewed HealthLynked sample** — real providers with human-confirmed correct
+values — which we then use to recalibrate the `confidence.py` constants. That
+labeled sample is the first concrete deliverable of the engagement (§13,
+Month 1). **Scalability** is validated on its own track against a **large
+benchmark dataset** (the full NPPES/CMS bulk files), kept independent of the
+accuracy work.
+
+The two decision error types are weighted by harm: a **false auto-update** (bad
+data goes live) is worse than a **false review** (a human looks at something
+fine), which is exactly why sensitive fields have higher bars and hard-stop
+rules.
 
 ---
 
@@ -519,7 +547,7 @@ is exactly why sensitive fields have higher bars and hard-stop rules.
 
 | Criterion | How this submission addresses it |
 |---|---|
-| **Accuracy** | Deterministic match + corroboration + `evaluate.py` P/R/F1 harness; harm-weighted thresholds |
+| **Accuracy** | Deterministic match + corroboration + harm-weighted thresholds; `evaluate.py` (validity) and `evaluate_update_decisions.py` (update decisions) on synthetic labels — real-world accuracy needs a manually reviewed sample |
 | **Scalability** | Bulk-file ingestion, stateless O(1) scoring, sharded re-verification, Postgres path |
 | **Cost efficiency** | Free data, deterministic-first, Haiku+batch+cache, gate-minimized review; **~$0.17 AI / 1,000** |
 | **Practicality** | Pure stdlib, one DB file, runs today; lean team can operate it; clear `Adapter` extension point |
@@ -564,9 +592,15 @@ python3 llm_extract.py --pipeline  # LLM extraction -> corroborate (NPPES) -> de
 # Cost model (override the levers)
 python3 cost_estimate.py --pct-llm 0.08 --pct-review 0.05
 
-# Accuracy harness (generate labeled data first) + the test suite
-python3 make_dirty_data.py && python3 evaluate.py
-python3 -m unittest        # 65 tests
+# Offline end-to-end demo (no internet, no API keys)
+python3 run_offline_demo.py
+
+# Evaluation harnesses (synthetic labels — see §12 for scope)
+python3 make_dirty_data.py && python3 evaluate.py   # record-validity gate
+python3 evaluate_update_decisions.py                 # update-decision accuracy (MVP)
+python3 benchmark.py                                 # scalability / throughput
+
+python3 -m unittest        # test suite
 ```
 
 *No installation. Python 3 standard library only. Internet required for the
