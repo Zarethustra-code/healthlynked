@@ -36,6 +36,11 @@ import compare
 import apply_changes
 import export_review
 import make_second_source
+import run_pipeline
+import seed_sample_data
+import detect
+import evaluate
+import evaluate_update_decisions
 
 # Full set of columns we seed providers with (the same ones fetch_data writes)
 _PROVIDER_COLS = ("npi", "name", "taxonomy_code", "specialty", "is_active",
@@ -331,6 +336,168 @@ class EmptySourceGuardTest(_TempDBTest):
                 "SELECT new_value FROM proposed_changes WHERE field='phone'").fetchone()
         self.assertIsNotNone(row, "Filling a field missing in the base should be proposed normally")
         self.assertEqual(row[0], "(212) 555-7777")
+
+
+class FailFastOnEmptyFetchTest(_TempDBTest):
+    """
+    Fail-safe gate: if the fetch step loaded zero providers, the pipeline must
+    stop immediately instead of marching through dirty-data generation,
+    comparison, scoring and review export and then printing a misleading
+    "finished successfully" message.
+    """
+
+    def test_count_providers_reflects_table_contents(self):
+        self.assertEqual(run_pipeline.count_providers(self.db), 0)
+        self._add_provider("1000000001")
+        self.assertEqual(run_pipeline.count_providers(self.db), 1)
+
+    def test_assert_raises_on_empty_providers(self):
+        # Fresh temp DB has the tables but no rows -> must refuse to continue
+        with self.assertRaises(run_pipeline.PipelineError):
+            run_pipeline.assert_providers_loaded(self.db)
+
+    def test_assert_message_is_reviewer_friendly(self):
+        with self.assertRaises(run_pipeline.PipelineError) as ctx:
+            run_pipeline.assert_providers_loaded(self.db)
+        msg = str(ctx.exception)
+        self.assertIn("0 provider records", msg)
+        self.assertIn("Stopping pipeline", msg)
+
+    def test_assert_passes_and_returns_count_when_loaded(self):
+        self._add_provider("1000000001")
+        self._add_provider("1000000002")
+        self.assertEqual(run_pipeline.assert_providers_loaded(self.db), 2)
+
+
+class OfflineDemoSeedTest(_TempDBTest):
+    """
+    The offline demo (seed_sample_data.py -> compare -> apply_changes) must run
+    with no network and prove every decision path the brief asks for.
+    """
+
+    def setUp(self):
+        super().setUp()
+        _quiet(seed_sample_data.seed, self.db)   # reset + load the offline sample
+        _quiet(compare.main)
+        _quiet(apply_changes.main)
+
+    def _changes(self):
+        with self._conn() as c:
+            return [dict(r) for r in c.execute(
+                "SELECT npi, field, decision, reason, status FROM proposed_changes")]
+
+    def test_at_least_20_providers_and_some_quarantine(self):
+        with self._conn() as c:
+            n_prov = c.execute("SELECT COUNT(*) FROM providers").fetchone()[0]
+            n_quar = c.execute("SELECT COUNT(*) FROM providers_quarantine").fetchone()[0]
+        self.assertGreaterEqual(n_prov, 20, "the sample must contain at least 20 providers")
+        self.assertGreaterEqual(n_quar, 1, "invalid records must be quarantined")
+
+    def test_both_auto_update_and_review_are_present(self):
+        decisions = {c["decision"] for c in self._changes()}
+        self.assertIn("AUTO_UPDATE", decisions)
+        self.assertIn("NEEDS_REVIEW", decisions)
+
+    def test_conflict_is_detected_and_held(self):
+        conflicts = [c for c in self._changes() if "conflict" in (c["reason"] or "").lower()]
+        self.assertTrue(conflicts, "at least one source-conflict change is expected")
+        self.assertTrue(all(c["decision"] == "NEEDS_REVIEW" for c in conflicts),
+                        "conflicting sources must never auto-apply")
+
+    def test_deactivation_is_routed_to_review(self):
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT decision FROM proposed_changes WHERE field = 'is_active'").fetchone()
+        self.assertIsNotNone(row, "the deactivation scenario should produce a change")
+        self.assertEqual(row[0], "NEEDS_REVIEW", "deactivation is high-stakes -> always reviewed")
+
+    def test_auto_updates_were_actually_applied(self):
+        with self._conn() as c:
+            applied = c.execute(
+                "SELECT COUNT(*) FROM proposed_changes WHERE status = 'applied'").fetchone()[0]
+            audited = c.execute(
+                "SELECT COUNT(*) FROM providers_audit_log WHERE action = 'AUTO_UPDATED'").fetchone()[0]
+        self.assertGreaterEqual(applied, 1)
+        self.assertEqual(applied, audited, "every applied auto-update must be in the audit log")
+
+    def test_no_change_scenarios_produce_nothing(self):
+        # Providers that have an agreeing second source must not generate changes.
+        with self._conn() as c:
+            with_ext = {r[0] for r in c.execute("SELECT DISTINCT npi FROM external_data")}
+            with_change = {r[0] for r in c.execute("SELECT DISTINCT npi FROM proposed_changes")}
+        self.assertTrue(with_ext - with_change, "at least one 'no change' provider is expected")
+
+    def test_duplicate_and_stale_detection(self):
+        with self._conn() as c:
+            dupes = detect.find_duplicate_providers(c)
+            stale = detect.find_stale_records(c)
+        self.assertGreaterEqual(len(dupes), 1, "the same provider under two NPIs must be flagged")
+        self.assertGreaterEqual(len(stale), 2, "old, un-reverified records must be flagged stale")
+
+    def test_dirty_intake_is_cleaned_before_storage(self):
+        # The messy "  dr. gregory   house, md  " intake must be normalized.
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT name FROM providers WHERE npi = ?",
+                (seed_sample_data.make_npi(50),)).fetchone()
+        self.assertIsNotNone(row, "the messy-but-valid record should be accepted")
+        self.assertEqual(row[0], "Gregory House", "titles/case/spacing must be cleaned")
+
+
+class UpdateDecisionEvaluationTest(unittest.TestCase):
+    """
+    The update-decision harness must classify every labeled fixture correctly
+    and — critically — never produce the two dangerous outcomes (a false
+    auto-update, or a missed change). This is the regression guard for the
+    confidence engine's decisions, separate from record-validity (evaluate.py).
+    """
+
+    def setUp(self):
+        self.rows, self.metrics = evaluate_update_decisions.evaluate()
+
+    def test_every_fixture_is_classified_correctly(self):
+        wrong = [r["id"] for r in self.rows if not r["correct"]]
+        self.assertEqual(wrong, [], f"misclassified fixtures: {wrong}")
+
+    def test_no_dangerous_outcomes(self):
+        self.assertEqual(self.metrics["false_auto_update"], 0,
+                         "must never auto-apply a change that should be blocked/reviewed")
+        self.assertEqual(self.metrics["missed_change"], 0,
+                         "must never miss a real change")
+        self.assertEqual(self.metrics["false_human_review"], 0,
+                         "the fixtures should not be over-flagged for review")
+
+    def test_each_expected_category_is_covered(self):
+        expected = {fx["expected"] for fx in evaluate_update_decisions.FIXTURES}
+        self.assertEqual(
+            expected,
+            {"no_change", "auto_update", "human_review", "conflict", "blocked_unsafe"})
+
+    def test_metrics_have_real_positives(self):
+        # The harness must actually exercise auto-update, review and no-change.
+        self.assertGreaterEqual(self.metrics["correct_auto_update"], 1)
+        self.assertGreaterEqual(self.metrics["correct_human_review"], 1)
+        self.assertGreaterEqual(self.metrics["correct_no_change"], 1)
+
+    def test_blocked_unsafe_is_high_confidence_but_held(self):
+        # A blocked change must have cleared the confidence bar yet been reviewed.
+        for fx in evaluate_update_decisions.FIXTURES:
+            if fx["expected"] != "blocked_unsafe":
+                continue
+            outcome, result = evaluate_update_decisions.predict(fx)
+            self.assertEqual(outcome, "human_review")
+            self.assertGreaterEqual(
+                result["confidence"],
+                evaluate_update_decisions.confidence.required_threshold(fx["field"]),
+                f"{fx['id']} should be blocked by a safety rule, not by low confidence")
+
+
+class EvaluationHonestyTest(unittest.TestCase):
+    """Both harnesses must carry the no-overclaim disclaimer verbatim."""
+
+    def test_disclaimer_is_consistent(self):
+        self.assertEqual(evaluate.DISCLAIMER, evaluate_update_decisions.DISCLAIMER)
+        self.assertIn("manually reviewed HealthLynked sample", evaluate.DISCLAIMER)
 
 
 if __name__ == "__main__":

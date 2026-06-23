@@ -81,6 +81,47 @@ open "Review dashboard.html"
 | 5     | `compare.py`            | Detect changes, score confidence, decide auto vs review  |
 | 6     | `apply_changes.py`      | Apply auto-updates, flag reviews, write the audit log    |
 
+> The live fetch (stage 2) needs internet. If NPPES/CMS is unreachable and 0
+> records come back, `run_pipeline.py` now **stops with a clear error instead of
+> reporting a false success** — and points you at the offline demo below.
+
+---
+
+## Run offline demo (no internet, no API keys)
+
+Reviewers can prove the full pipeline behavior with **zero network access** and
+nothing to install:
+
+```bash
+python3 run_offline_demo.py
+```
+
+Instead of fetching from the live APIs, this seeds the database from a small,
+deterministic, hand-built sample (`seed_sample_data.py`) and then runs the real
+comparison → scoring → apply → export → directory-health stages, finishing with
+a scannable decision summary.
+
+The sample is **23 providers + 3 quarantined records**, deliberately shaped so
+the run exercises every decision path:
+
+| Capability            | What the demo shows                                              |
+|-----------------------|-----------------------------------------------------------------|
+| `no_change`           | Providers whose second source agrees on every field             |
+| `auto_update`         | High-confidence change (authoritative / multi-source) applied   |
+| `human_review`        | A real change that does not clear the safety bar                |
+| conflicting sources   | Two sources disagree on the new value → never auto-applied       |
+| invalid/dirty values  | Bad NPI / empty name → quarantined; messy-but-valid → cleaned    |
+| duplicate detection   | Two NPIs that look like the same provider (same name + phone)   |
+| stale records         | Providers not re-verified in >180 days → re-verify queue        |
+
+Two helper files back this path (still standard-library only):
+
+- **`seed_sample_data.py`** — resets `healthlynked.db` using the existing schema
+  and loads the labeled offline sample (the no-internet replacement for
+  `fetch_data.py`).
+- **`run_offline_demo.py`** — orchestrates seed → compare → apply → export →
+  detect and prints the decision summary.
+
 ---
 
 ## Database schema (`healthlynked.db`)
@@ -126,12 +167,45 @@ Created by `database.py`:
 
 ### Evaluation / testing harness
 - **`make_dirty_data.py`** — produces `dirty_providers.csv` with known
-  good/bad records (real errors vs cosmetic noise) for measuring accuracy.
+  good/bad records (real errors vs cosmetic noise) for the **record-validity**
+  harness.
 - **`process.py`** — runs raw records through validation/normalization and
   splits them into `providers` vs `providers_quarantine`.
-- **`evaluate.py`** — scores the system against `dirty_providers.csv` and
-  reports a confusion matrix plus Precision / Recall / Accuracy / F1.
+- **`evaluate.py`** — **record-validity** harness only: scores the NPI/name
+  intake gate against `dirty_providers.csv` and reports a confusion matrix plus
+  Precision / Recall / Accuracy / F1. It does **not** measure update-decision or
+  real-world accuracy.
+- **`evaluate_update_decisions.py`** — **update-decision** harness (MVP): runs
+  labeled fixtures (no_change / auto_update / human_review / conflict /
+  blocked-unsafe) through the real `confidence.py` engine and reports
+  correct/false auto-update, correct/false human-review, and missed-change.
+- **`benchmark.py`** — **scalability** harness: throughput (field-scores/sec)
+  of the scoring engine; run separately on a large dataset.
 - **`count_columns.py`** — small helper for inspecting CSV columns.
+
+---
+
+## Evaluation scope (what each harness does and does not prove)
+
+The project separates three different questions so no number is overclaimed:
+
+| Harness | Question it answers | Status / honesty |
+|---|---|---|
+| `evaluate.py` | **Record validity** — is a record well-formed enough to admit (vs. quarantine)? | Binary classifier vs. **synthetic** labels. |
+| `evaluate_update_decisions.py` | **Update-decision accuracy** — given a proposed change, does the engine pick auto / review / no-change / block correctly? | **Synthetic** labeled fixtures; proves logic + guards regressions. |
+| `benchmark.py` | **Scalability** — how many decisions per second per core? | Reproducible throughput; run on a large dataset separately. |
+
+> **None of these prove real-world update accuracy.** The synthetic labels show
+> the pipeline *behaves as designed*; they are not evidence of field-level
+> accuracy on live providers.
+
+**How to actually validate before relying on the numbers:**
+- **Accuracy** must be measured on a **manually reviewed HealthLynked sample**
+  (real providers, human-confirmed correct values), then used to recalibrate the
+  `confidence.py` weights/thresholds. This is the first deliverable in
+  `PROPOSAL.md` (§12–§13, Month 1).
+- **Scalability** must be tested **separately** on a **large benchmark dataset**
+  (e.g. the full NPPES/CMS bulk files), not inferred from the small demo.
 
 ---
 
@@ -161,4 +235,5 @@ Created by `database.py`:
 ## Requirements
 
 - Python 3 (standard library only)
-- Internet access for the NPPES fetch step
+- Internet access for the **live** NPPES fetch step (`run_pipeline.py`)
+- **No internet and no API keys** for the offline demo (`run_offline_demo.py`)
